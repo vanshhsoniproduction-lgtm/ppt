@@ -38,7 +38,8 @@ export default function ControlPage() {
   const [isZoomed, setIsZoomed] = useState(false);
   const [notes, setNotes] = useState([]);
 
-  // Preloading State
+  // 100% Mobile RAM Image Blob Caching State
+  const [cachedSlides, setCachedSlides] = useState([]);
   const [isPreloading, setIsPreloading] = useState(true);
   const [preloadProgress, setPreloadProgress] = useState(0);
 
@@ -68,25 +69,44 @@ export default function ControlPage() {
     }
   };
 
-  // PRELOAD ALL SLIDE IMAGES FOR ZERO LAG ON MOBILE
+  // PRELOAD ALL SLIDES INTO MOBILE RAM MEMORY AS BLOB OBJECT URLS
   useEffect(() => {
     if (!deckId || !totalSlides) return;
 
-    setIsPreloading(true);
-    setPreloadProgress(0);
+    let isMounted = true;
+    const slideMap = new Array(totalSlides);
     let loadedCount = 0;
 
-    for (let i = 0; i < totalSlides; i++) {
-      const img = new Image();
-      img.onload = img.onerror = () => {
-        loadedCount++;
-        setPreloadProgress(Math.round((loadedCount / totalSlides) * 100));
-        if (loadedCount >= totalSlides) {
-          setIsPreloading(false);
+    const loadAllMobileSlides = async () => {
+      setIsPreloading(true);
+      setPreloadProgress(0);
+
+      for (let i = 0; i < totalSlides; i++) {
+        try {
+          const res = await fetch(`/api/slides/${deckId}/${i}`);
+          const blob = await res.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          slideMap[i] = objectUrl;
+        } catch (e) {
+          slideMap[i] = `/api/slides/${deckId}/${i}`;
         }
-      };
-      img.src = `/api/slides/${deckId}/${i}`;
-    }
+        loadedCount++;
+        if (isMounted) {
+          setPreloadProgress(Math.round((loadedCount / totalSlides) * 100));
+        }
+      }
+
+      if (isMounted) {
+        setCachedSlides(slideMap);
+        setIsPreloading(false);
+      }
+    };
+
+    loadAllMobileSlides();
+
+    return () => {
+      isMounted = false;
+    };
   }, [deckId, totalSlides]);
 
   // ── Socket Connection ──
@@ -198,7 +218,6 @@ export default function ControlPage() {
     triggerHaptic();
     const c = getCanvasCoords(e);
     setIsDrawing(true);
-    // Initial 16:9 ratio box
     const w = 15;
     const h = w / (16 / 9);
     setSelectionBox({
@@ -214,10 +233,9 @@ export default function ControlPage() {
     const c = getCanvasCoords(e);
     setSelectionBox(prev => {
       if (!prev) return null;
-      // Calculate width and enforce 16:9 aspect ratio for height
       const rawW = Math.abs(c.pctX - prev.startX);
       const width = Math.max(8, rawW);
-      const height = width / (16 / 9); // Enforce 16:9 presentation ratio!
+      const height = width / (16 / 9);
 
       const startX = c.pctX < prev.startX ? c.pctX : prev.startX;
       const startY = c.pctY < prev.startY ? Math.max(0, prev.startY - height) : prev.startY;
@@ -263,8 +281,8 @@ export default function ControlPage() {
     if (socket) socket.emit('trigger-confetti');
   };
 
-  // Slide image URL from server API
-  const slideImgUrl = deckId ? `/api/slides/${deckId}/${currentSlide}` : null;
+  // Slide image source from RAM cache
+  const slideImgSrc = cachedSlides[currentSlide] || (deckId ? `/api/slides/${deckId}/${currentSlide}` : null);
   const currentNote = notes[currentSlide] || '';
 
   // ── Error / Ended States ──
@@ -355,7 +373,7 @@ export default function ControlPage() {
               onTouchStart={onZoomStart} onTouchMove={onZoomMove} onTouchEnd={onZoomEnd}
               onMouseDown={onZoomStart} onMouseMove={onZoomMove} onMouseUp={onZoomEnd}
               className="relative w-full aspect-[16/9] bg-black rounded-2xl border border-[var(--dc-border)] shadow-lg overflow-hidden select-none flex items-center justify-center my-auto touch-none">
-              {slideImgUrl && <img src={slideImgUrl} alt="Current slide" className="w-full h-full object-contain pointer-events-none" />}
+              {slideImgSrc && <img src={slideImgSrc} alt="Current slide" className="w-full h-full object-contain pointer-events-none" />}
               {selectionBox && (
                 <div className="absolute border-2 border-[var(--dc-blue)] bg-blue-500/20 rounded-lg dc-zoom-selection pointer-events-none"
                   style={{
@@ -493,7 +511,7 @@ export default function ControlPage() {
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] bg-[var(--dc-bg)] text-[var(--dc-text)] flex flex-col overflow-hidden select-none">
-      {/* Preloading HUD Progress Overlay */}
+      {/* Preloading Mobile HUD Progress Overlay */}
       <AnimatePresence>
         {isPreloading && (
           <motion.div
@@ -502,18 +520,18 @@ export default function ControlPage() {
             exit={{ opacity: 0 }}
             className="absolute inset-0 bg-black/85 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 space-y-4"
           >
-            <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-blue-500/30">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-blue-500/30">
               D
             </div>
             <div className="text-center space-y-1">
-              <h3 className="text-base font-bold text-white">Caching Presentation Pages</h3>
-              <p className="text-xs text-slate-400">Loading {totalSlides} slides into mobile memory</p>
+              <h3 className="text-base font-bold text-white">Caching Mobile Presentation</h3>
+              <p className="text-xs text-slate-400">Storing {totalSlides} slides in mobile RAM memory</p>
             </div>
-            <div className="w-64 bg-slate-800 rounded-full h-2 overflow-hidden p-0.5 border border-slate-700">
+            <div className="w-64 bg-slate-800 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-700">
               <motion.div
-                className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full rounded-full"
+                className="bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 h-full rounded-full"
                 animate={{ width: `${preloadProgress}%` }}
-                transition={{ duration: 0.2 }}
+                transition={{ duration: 0.15 }}
               />
             </div>
             <span className="text-xs font-mono text-blue-400 font-bold">{preloadProgress}% Cached</span>

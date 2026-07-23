@@ -12,6 +12,7 @@ import {
   EyeOff,
   StopCircle,
   Loader2,
+  Sparkles,
 } from 'lucide-react';
 
 export default function HostScreen() {
@@ -32,7 +33,8 @@ export default function HostScreen() {
   const [slideDirection, setSlideDirection] = useState(1); // 1 = Next (L->R), -1 = Prev (R->L)
   const currentSlideRef = useRef(0);
 
-  // Preloading State
+  // 100% In-Memory RAM Image Caching State
+  const [cachedSlides, setCachedSlides] = useState([]);
   const [isPreloading, setIsPreloading] = useState(true);
   const [preloadProgress, setPreloadProgress] = useState(0);
 
@@ -50,30 +52,48 @@ export default function HostScreen() {
 
   const containerRef = useRef(null);
 
-  // Keep currentSlideRef in sync for direction check
   useEffect(() => {
     currentSlideRef.current = currentSlide;
   }, [currentSlide]);
 
-  // PRELOAD ALL SLIDES BEFORE PRESENTATION
+  // PRELOAD ALL SLIDES DIRECTLY INTO BLOB URLS IN RAM MEMORY
   useEffect(() => {
     if (!deckId || !totalSlides) return;
 
-    setIsPreloading(true);
-    setPreloadProgress(0);
+    let isMounted = true;
+    const slideMap = new Array(totalSlides);
     let loadedCount = 0;
 
-    for (let i = 0; i < totalSlides; i++) {
-      const img = new Image();
-      img.onload = img.onerror = () => {
-        loadedCount++;
-        setPreloadProgress(Math.round((loadedCount / totalSlides) * 100));
-        if (loadedCount >= totalSlides) {
-          setIsPreloading(false);
+    const loadAllSlides = async () => {
+      setIsPreloading(true);
+      setPreloadProgress(0);
+
+      for (let i = 0; i < totalSlides; i++) {
+        try {
+          const res = await fetch(`/api/slides/${deckId}/${i}`);
+          const blob = await res.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          slideMap[i] = objectUrl;
+        } catch (e) {
+          slideMap[i] = `/api/slides/${deckId}/${i}`;
         }
-      };
-      img.src = `/api/slides/${deckId}/${i}`;
-    }
+        loadedCount++;
+        if (isMounted) {
+          setPreloadProgress(Math.round((loadedCount / totalSlides) * 100));
+        }
+      }
+
+      if (isMounted) {
+        setCachedSlides(slideMap);
+        setIsPreloading(false);
+      }
+    };
+
+    loadAllSlides();
+
+    return () => {
+      isMounted = false;
+    };
   }, [deckId, totalSlides]);
 
   // Socket connection
@@ -136,7 +156,7 @@ export default function HostScreen() {
     newSocket.on('blackout-updated', (data) => setBlackout(data.blackout));
 
     newSocket.on('confetti-triggered', () => {
-      confetti({ particleCount: 140, spread: 90, origin: { y: 0.6 } });
+      confetti({ particleCount: 160, spread: 100, origin: { y: 0.6 } });
     });
 
     newSocket.on('client-count-updated', (data) => setConnectedClients(data.connectedClients));
@@ -211,7 +231,6 @@ export default function HostScreen() {
     const cx = Math.min(100, Math.max(0, pxX + pxW / 2));
     const cy = Math.min(100, Math.max(0, pxY + pxH / 2));
 
-    // Calculate scale required to make the selection fill the 16:9 viewport
     const scaleX = 100 / pxW;
     const scaleY = 100 / pxH;
     const scale = Math.min(6, Math.max(1.2, Math.min(scaleX, scaleY)));
@@ -230,24 +249,32 @@ export default function HostScreen() {
     brightness(${filters.brightness}%)
   `.trim();
 
-  // Slide Animation Variants for Left-to-Right and Right-to-Left
+  // COOL 3D PARALLAX KEYNOTE SLIDE ANIMATION VARIANTS
   const slideVariants = {
     enter: (dir) => ({
       x: dir > 0 ? '100%' : '-100%',
+      rotateY: dir > 0 ? 35 : -35,
+      scale: 0.84,
       opacity: 0,
-      scale: 0.96,
+      filter: 'blur(12px)',
     }),
     center: {
       x: '0%',
-      opacity: 1,
+      rotateY: 0,
       scale: 1,
+      opacity: 1,
+      filter: 'blur(0px)',
     },
     exit: (dir) => ({
       x: dir < 0 ? '100%' : '-100%',
+      rotateY: dir < 0 ? 35 : -35,
+      scale: 0.84,
       opacity: 0,
-      scale: 0.96,
+      filter: 'blur(12px)',
     }),
   };
+
+  const currentSlideSrc = cachedSlides[currentSlide] || `/api/slides/${deckId}/${currentSlide}`;
 
   // Error / ended states
   if (sessionError || (!sessionActive && deckId)) {
@@ -280,6 +307,7 @@ export default function HostScreen() {
     <div
       ref={containerRef}
       className="relative w-screen h-screen bg-black text-white overflow-hidden select-none flex items-center justify-center"
+      style={{ perspective: '1200px' }}
     >
       {/* Preloading HUD Progress Overlay */}
       <AnimatePresence>
@@ -290,21 +318,21 @@ export default function HostScreen() {
             exit={{ opacity: 0 }}
             className="absolute inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 space-y-4"
           >
-            <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-blue-500/30">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-blue-500/30">
               D
             </div>
             <div className="text-center space-y-1">
-              <h3 className="text-base font-bold text-white">Preloading High-Definition Presentation</h3>
-              <p className="text-xs text-slate-400">Caching all {totalSlides} slides in memory for zero-lag presentation</p>
+              <h3 className="text-base font-bold text-white">Preloading High-Definition Slides</h3>
+              <p className="text-xs text-slate-400">Caching {totalSlides} pages directly into ultra-fast RAM memory</p>
             </div>
-            <div className="w-64 bg-slate-800 rounded-full h-2 overflow-hidden p-0.5 border border-slate-700">
+            <div className="w-64 bg-slate-800 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-700">
               <motion.div
-                className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full rounded-full"
+                className="bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 h-full rounded-full"
                 animate={{ width: `${preloadProgress}%` }}
-                transition={{ duration: 0.2 }}
+                transition={{ duration: 0.15 }}
               />
             </div>
-            <span className="text-xs font-mono text-blue-400 font-bold">{preloadProgress}% Loaded</span>
+            <span className="text-xs font-mono text-blue-400 font-bold">{preloadProgress}% Cached</span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -331,7 +359,7 @@ export default function HostScreen() {
           className="w-full h-full relative overflow-hidden flex items-center justify-center"
           animate={{ scale: zoom.scale, transformOrigin: zoom.transformOrigin }}
           transition={{ type: 'spring', stiffness: 190, damping: 25 }}
-          style={{ filter: cssFilter }}
+          style={{ filter: cssFilter, transformStyle: 'preserve-3d' }}
         >
           <AnimatePresence mode="wait" custom={slideDirection}>
             <motion.div
@@ -341,13 +369,19 @@ export default function HostScreen() {
               initial="enter"
               animate="center"
               exit="exit"
-              transition={{ type: 'spring', stiffness: 260, damping: 28 }}
+              transition={{
+                type: 'spring',
+                stiffness: 220,
+                damping: 24,
+                mass: 0.8,
+              }}
               className="w-full h-full flex items-center justify-center absolute inset-0"
+              style={{ transformStyle: 'preserve-3d' }}
             >
               <img
-                src={`/api/slides/${deckId}/${currentSlide}`}
+                src={currentSlideSrc}
                 alt={`Slide ${currentSlide + 1}`}
-                className="max-w-full max-h-full object-contain"
+                className="max-w-full max-h-full object-contain shadow-2xl"
                 draggable={false}
               />
             </motion.div>
