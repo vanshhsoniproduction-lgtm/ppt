@@ -19,6 +19,7 @@ import {
   Loader2,
   StopCircle,
   ArrowLeft,
+  Move,
 } from 'lucide-react';
 
 export default function ControlPage() {
@@ -49,8 +50,10 @@ export default function ControlPage() {
   const [spotlightActive, setSpotlightActive] = useState(false);
   const [blackoutActive, setBlackoutActive] = useState(false);
 
-  // Zoom selection (16:9 Aspect Ratio Enforced)
+  // 16:9 Bi-directional Zoom Selection & Live Box Shifting/Panning State
   const [isDrawing, setIsDrawing] = useState(false);
+  const [isDraggingBox, setIsDraggingBox] = useState(false);
+  const [dragAnchor, setDragAnchor] = useState({ startX: 0, startY: 0, initialBoxX: 0, initialBoxY: 0 });
   const [selectionBox, setSelectionBox] = useState(null);
   const zoomCanvasRef = useRef(null);
 
@@ -74,7 +77,6 @@ export default function ControlPage() {
     const urls = Array.from({ length: totalSlides }, (_, i) => `/api/slides/${deckId}/${i}`);
     setCachedSlides(urls);
 
-    // Preload into browser image cache in parallel
     urls.forEach((url) => {
       const img = new Image();
       img.src = url;
@@ -106,6 +108,14 @@ export default function ControlPage() {
       setBlackoutActive(state.blackout || false);
       setNotes(state.notes || []);
       setSessionActive(true);
+      if (state.isZoomed && state.zoomCoords) {
+        setSelectionBox({
+          startX: state.zoomCoords.x,
+          startY: state.zoomCoords.y,
+          width: state.zoomCoords.width,
+          height: state.zoomCoords.height,
+        });
+      }
     });
 
     newSocket.on('session-error', (data) => {
@@ -120,7 +130,17 @@ export default function ControlPage() {
       setSelectionBox(null);
     });
 
-    newSocket.on('zoom-updated', (data) => setIsZoomed(data.isZoomed));
+    newSocket.on('zoom-updated', (data) => {
+      setIsZoomed(data.isZoomed);
+      if (data.zoomCoords) {
+        setSelectionBox({
+          startX: data.zoomCoords.x,
+          startY: data.zoomCoords.y,
+          width: data.zoomCoords.width,
+          height: data.zoomCoords.height,
+        });
+      }
+    });
 
     newSocket.on('zoom-reset', () => {
       setIsZoomed(false);
@@ -174,7 +194,7 @@ export default function ControlPage() {
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── PERFECT 16:9 RECTANGULAR ENFORCED DRAG-TO-ZOOM SELECTION ──
+  // ── BI-DIRECTIONAL DRAG & LIVE SHIFT/PANNING ZOOM SELECTION ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -189,9 +209,29 @@ export default function ControlPage() {
   const onZoomStart = (e) => {
     triggerHaptic();
     const c = getCanvasCoords(e);
+
+    // Check if touch point falls INSIDE an existing active selection box for panning
+    if (selectionBox) {
+      const insideX = c.pctX >= selectionBox.startX && c.pctX <= selectionBox.startX + selectionBox.width;
+      const insideY = c.pctY >= selectionBox.startY && c.pctY <= selectionBox.startY + selectionBox.height;
+
+      if (insideX && insideY) {
+        setIsDraggingBox(true);
+        setDragAnchor({
+          startX: c.pctX,
+          startY: c.pctY,
+          initialBoxX: selectionBox.startX,
+          initialBoxY: selectionBox.startY,
+        });
+        return;
+      }
+    }
+
+    // Otherwise: Start drawing a new bi-directional box
     setIsDrawing(true);
-    const w = 16;
-    const h = w / (16 / 9); // 16:9 Aspect Ratio
+    setDragAnchor({ startX: c.pctX, startY: c.pctY, initialBoxX: c.pctX, initialBoxY: c.pctY });
+    const w = 12;
+    const h = w / (16 / 9);
     setSelectionBox({
       startX: c.pctX,
       startY: c.pctY,
@@ -201,35 +241,84 @@ export default function ControlPage() {
   };
 
   const onZoomMove = (e) => {
-    if (!isDrawing) return;
     const c = getCanvasCoords(e);
-    setSelectionBox(prev => {
-      if (!prev) return null;
-      const rawW = Math.abs(c.pctX - prev.startX);
-      const width = Math.max(10, rawW);
-      const height = width / (16 / 9); // 16:9 Presentation Ratio
 
-      const startX = c.pctX < prev.startX ? c.pctX : prev.startX;
-      const startY = c.pctY < prev.startY ? Math.max(0, prev.startY - height) : prev.startY;
+    // MODE 1: Pan/Shift existing zoomed box in ANY direction (Live real-time screen shift)
+    if (isDraggingBox && selectionBox) {
+      const deltaX = c.pctX - dragAnchor.startX;
+      const deltaY = c.pctY - dragAnchor.startY;
 
-      return { startX, startY, width, height };
-    });
+      const newStartX = Math.min(100 - selectionBox.width, Math.max(0, dragAnchor.initialBoxX + deltaX));
+      const newStartY = Math.min(100 - selectionBox.height, Math.max(0, dragAnchor.initialBoxY + deltaY));
+
+      const updatedBox = { ...selectionBox, startX: newStartX, startY: newStartY };
+      setSelectionBox(updatedBox);
+
+      // Broadcast live screen shift to Host Screen
+      if (socket) {
+        socket.emit('zoom-area', {
+          x: newStartX,
+          y: newStartY,
+          width: selectionBox.width,
+          height: selectionBox.height,
+        });
+      }
+      return;
+    }
+
+    // MODE 2: Draw a new 16:9 box in ANY direction (Right->Left, Left->Right, Up, Down)
+    if (isDrawing) {
+      const minX = Math.min(dragAnchor.startX, c.pctX);
+      const maxX = Math.max(dragAnchor.startX, c.pctX);
+      const minY = Math.min(dragAnchor.startY, c.pctY);
+      const maxY = Math.max(dragAnchor.startY, c.pctY);
+
+      const rawW = Math.max(8, maxX - minX);
+      const rawH = Math.max(8 / (16 / 9), maxY - minY);
+
+      // Keep strict 16:9 ratio
+      const width = Math.max(rawW, rawH * (16 / 9));
+      const height = width / (16 / 9);
+
+      const updatedBox = {
+        startX: Math.min(100 - width, Math.max(0, minX)),
+        startY: Math.min(100 - height, Math.max(0, minY)),
+        width,
+        height,
+      };
+
+      setSelectionBox(updatedBox);
+
+      // Broadcast live box zoom to Host Screen
+      if (socket) {
+        socket.emit('zoom-area', {
+          x: updatedBox.startX,
+          y: updatedBox.startY,
+          width: updatedBox.width,
+          height: updatedBox.height,
+        });
+      }
+    }
   };
 
   const onZoomEnd = () => {
-    if (!isDrawing || !selectionBox) return;
-    setIsDrawing(false);
-    triggerHaptic();
+    if (isDrawing || isDraggingBox) {
+      setIsDrawing(false);
+      setIsDraggingBox(false);
+      triggerHaptic();
 
-    const zoomCoords = {
-      x: selectionBox.startX,
-      y: selectionBox.startY,
-      width: selectionBox.width,
-      height: selectionBox.height,
-    };
-
-    setIsZoomed(true);
-    if (socket) socket.emit('zoom-area', zoomCoords);
+      if (selectionBox) {
+        setIsZoomed(true);
+        if (socket) {
+          socket.emit('zoom-area', {
+            x: selectionBox.startX,
+            y: selectionBox.startY,
+            width: selectionBox.width,
+            height: selectionBox.height,
+          });
+        }
+      }
+    }
   };
 
   // ── Laser ──
@@ -336,18 +425,22 @@ export default function ControlPage() {
             className="flex-1 flex flex-col justify-between gap-3 py-2">
             <div className="text-center">
               <h3 className="text-sm font-bold flex items-center justify-center gap-1.5">
-                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> 16:9 Smart Drag-to-Zoom
+                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> Smart 16:9 Drag & Shift Zoom
               </h3>
-              <p className="text-[11px] text-[var(--dc-text-secondary)]">Draw a 16:9 box on the live slide image below</p>
+              <p className="text-[11px] text-[var(--dc-text-secondary)]">
+                Drag in ANY direction to draw box • Touch INSIDE box to shift/pan live!
+              </p>
             </div>
 
             <div ref={zoomCanvasRef}
               onTouchStart={onZoomStart} onTouchMove={onZoomMove} onTouchEnd={onZoomEnd}
               onMouseDown={onZoomStart} onMouseMove={onZoomMove} onMouseUp={onZoomEnd}
-              className="relative w-full aspect-[16/9] bg-black rounded-2xl border border-[var(--dc-border)] shadow-lg overflow-hidden select-none flex items-center justify-center my-auto touch-none">
+              className="relative w-full aspect-[16/9] bg-black rounded-2xl border border-[var(--dc-border)] shadow-lg overflow-hidden select-none flex items-center justify-center my-auto touch-none cursor-crosshair">
               {slideImgSrc && <img src={slideImgSrc} alt="Current slide" className="w-full h-full object-contain pointer-events-none" />}
+
+              {/* Active Selection Box with Live Shift/Pan Handle Indicator */}
               {selectionBox && (
-                <div className="absolute border-2 border-[var(--dc-blue)] bg-blue-500/20 rounded-lg dc-zoom-selection pointer-events-none"
+                <div className="absolute border-2 border-[var(--dc-blue)] bg-blue-500/20 rounded-lg dc-zoom-selection cursor-move"
                   style={{
                     left: `${selectionBox.startX}%`,
                     top: `${selectionBox.startY}%`,
@@ -355,8 +448,11 @@ export default function ControlPage() {
                     height: `${selectionBox.height}%`,
                   }}
                 >
-                  <span className="absolute -top-3.5 left-0 text-[8px] bg-[var(--dc-blue)] text-white px-1 rounded font-mono font-bold">
-                    16:9 Target
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--dc-blue)]/80 text-white p-1 rounded-full shadow-md">
+                    <Move className="w-3 h-3 animate-pulse" />
+                  </div>
+                  <span className="absolute -top-3.5 left-0 text-[8px] bg-[var(--dc-blue)] text-white px-1 rounded font-mono font-bold flex items-center gap-0.5">
+                    16:9 Target (Drag inside to shift)
                   </span>
                 </div>
               )}
@@ -500,7 +596,7 @@ export default function ControlPage() {
           </button>
 
           <button onClick={handleReset} className="dc-btn dc-btn-danger text-[11px] py-1 px-2 gap-1">
-            <RotateCcw className="w-3 h-3" /> ESC
+            <RotateCcw className="w-3.5 h-3.5" /> ESC
           </button>
         </div>
       </div>
