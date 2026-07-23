@@ -16,10 +16,9 @@ import {
   Sun,
   Moon,
   Eye,
-  Check
+  Radio
 } from 'lucide-react';
 import { getDeckByIdFromDB } from '../utils/db';
-import { SAMPLE_DECKS } from '../data/sampleDecks';
 import { processPdfFile, processImageFiles } from '../utils/pdfProcessor';
 
 export default function RemotePage() {
@@ -150,8 +149,8 @@ export default function RemotePage() {
     return () => clearInterval(interval);
   }, [isTimerRunning]);
 
-  const slideDeck = activeDeck || SAMPLE_DECKS[0];
-  const slides = slideDeck.slides || [];
+  const slideDeck = activeDeck;
+  const slides = slideDeck ? (slideDeck.slides || []) : [];
   const currentSlideData = slides[currentSlide] || slides[0] || {};
 
   const triggerHaptic = () => {
@@ -309,6 +308,28 @@ export default function RemotePage() {
     const s = secs % 60;
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
+
+  // If no deck is loaded yet, show minimal loading state instead of generic data
+  if (!activeDeck) {
+    return (
+      <div className="w-screen h-screen bg-[#F2F2F7] text-[#1C1C1E] flex flex-col items-center justify-center p-6 text-center">
+        <div className="glass-panel-light p-8 max-w-sm w-full space-y-4 border border-white shadow-xl">
+          <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white mx-auto shadow-md">
+            <Radio className="w-6 h-6 animate-pulse" />
+          </div>
+          <h3 className="text-lg font-extrabold text-[#1C1C1E]">Connecting to Presentation</h3>
+          <p className="text-xs text-slate-500 font-medium">
+            Syncing live presentation slides for Room <strong className="text-blue-600 font-mono">{roomId}</strong>...
+          </p>
+          <label className="glass-button-primary p-3 w-full text-xs font-bold flex items-center justify-center space-x-2 cursor-pointer shadow-sm">
+            <UploadCloud className="w-4 h-4" />
+            <span>Upload PDF Directly</span>
+            <input type="file" accept=".pdf,image/*" onChange={handleMobilePdfUpload} className="hidden" />
+          </label>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-screen h-screen bg-[#F2F2F7] text-[#1C1C1E] flex flex-col justify-between overflow-hidden select-none touch-none">

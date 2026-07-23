@@ -53,25 +53,37 @@ export default function PresentPage() {
     const deckParam = urlParams.get('deck');
     setRoomId(roomParam.toUpperCase());
 
+    const newSocket = io();
+    setSocket(newSocket);
+
+    // Function to broadcast deck to server room once loaded
+    const broadcastDeck = (loadedDeck) => {
+      setActiveDeck(loadedDeck);
+      if (newSocket && loadedDeck) {
+        newSocket.emit('upload-deck', { deck: loadedDeck });
+      }
+    };
+
     // Load actual deck from IndexedDB
     if (deckParam) {
       getDeckByIdFromDB(deckParam).then(deck => {
         if (deck) {
-          setActiveDeck(deck);
+          broadcastDeck(deck);
         } else {
-          setActiveDeck(SAMPLE_DECKS[0]);
+          broadcastDeck(SAMPLE_DECKS[0]);
         }
       });
     } else {
-      setActiveDeck(SAMPLE_DECKS[0]);
+      broadcastDeck(SAMPLE_DECKS[0]);
     }
-
-    const newSocket = io();
-    setSocket(newSocket);
 
     newSocket.on('connect', () => {
       setIsConnected(true);
       newSocket.emit('join-room', { roomId: roomParam, role: 'host' });
+      // If deck is already loaded locally, broadcast to room immediately upon socket connect
+      if (activeDeck) {
+        newSocket.emit('upload-deck', { deck: activeDeck });
+      }
     });
 
     newSocket.on('disconnect', () => {
@@ -138,6 +150,13 @@ export default function PresentPage() {
 
     return () => { newSocket.disconnect(); };
   }, []);
+
+  // Make sure to re-broadcast if socket connects after deck is loaded
+  useEffect(() => {
+    if (socket && isConnected && activeDeck) {
+      socket.emit('upload-deck', { deck: activeDeck });
+    }
+  }, [socket, isConnected, activeDeck]);
 
   const slideDeck = activeDeck || SAMPLE_DECKS[0];
   const slides = slideDeck.slides || [];
