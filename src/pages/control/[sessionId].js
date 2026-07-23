@@ -50,7 +50,7 @@ export default function ControlPage() {
   const [spotlightActive, setSpotlightActive] = useState(false);
   const [blackoutActive, setBlackoutActive] = useState(false);
 
-  // 16:9 Left-to-Right Drag Selection & 0.5s Delayed Pan State
+  // 16:9 Left-to-Right Drag Selection & Delayed (0.5s) Box Shifting State
   const [isDrawing, setIsDrawing] = useState(false);
   const [isDraggingBox, setIsDraggingBox] = useState(false);
   const [isPanReady, setIsPanReady] = useState(false); // Enabled 0.5s after releasing drag
@@ -59,8 +59,8 @@ export default function ControlPage() {
 
   const zoomCanvasRef = useRef(null);
   const panTimeoutRef = useRef(null);
-  const emitTimeoutRef = useRef(null);
   const rafRef = useRef(null);
+  const lastEmitRef = useRef(0);
 
   // Laser
   const laserTrackpadRef = useRef(null);
@@ -136,7 +136,6 @@ export default function ControlPage() {
       setSelectionBox(null);
       setIsPanReady(false);
       if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
-      if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
     });
 
     newSocket.on('zoom-updated', (data) => {
@@ -157,7 +156,6 @@ export default function ControlPage() {
       setSpotlightActive(false);
       setIsPanReady(false);
       if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
-      if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
     });
 
     newSocket.on('filter-updated', (data) => setFilters(data.filters));
@@ -205,11 +203,10 @@ export default function ControlPage() {
     setSpotlightActive(false);
     setIsPanReady(false);
     if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
-    if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── NO LIVE DRAGGING BROADCAST — ANIMATED ZOOM APPLIES 0.1s AFTER RELEASE ──
+  // ── INSTANT ZOOM ON SHAPE RELEASE + REAL-TIME LIVE MOVE/PANNING ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -239,7 +236,6 @@ export default function ControlPage() {
 
     // MODE B: Draw new shape locally on mobile (no socket emit while drawing!)
     if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
-    if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
     setIsPanReady(false);
     setIsDrawing(true);
     setDragAnchor({ startX: c.pctX, startY: c.pctY, initialBoxX: c.pctX, initialBoxY: c.pctY });
@@ -250,7 +246,7 @@ export default function ControlPage() {
     const c = getCanvasCoords(e);
 
     rafRef.current = requestAnimationFrame(() => {
-      // MODE A: Shift/Pan existing box locally on mobile
+      // MODE A: LIVE REAL-TIME MOVE/PANNING of existing box
       if (isDraggingBox && selectionBox) {
         const deltaX = c.pctX - dragAnchor.startX;
         const deltaY = c.pctY - dragAnchor.startY;
@@ -260,10 +256,22 @@ export default function ControlPage() {
 
         const updatedBox = { ...selectionBox, startX: newStartX, startY: newStartY };
         setSelectionBox(updatedBox);
+
+        // LIVE REAL-TIME SOCKET EMIT for smooth live panning on Host Screen
+        const now = Date.now();
+        if (socket && now - lastEmitRef.current > 33) {
+          lastEmitRef.current = now;
+          socket.emit('zoom-area', {
+            x: newStartX,
+            y: newStartY,
+            width: selectionBox.width,
+            height: selectionBox.height,
+          });
+        }
         return;
       }
 
-      // MODE B: Draw new 16:9 box locally on mobile (ONLY Left-to-Right →)
+      // MODE B: Draw new 16:9 box locally on mobile (ONLY Left-to-Right →, NO LIVE SOCKET EMIT)
       if (isDrawing) {
         if (c.pctX <= dragAnchor.startX) return;
 
@@ -283,6 +291,7 @@ export default function ControlPage() {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
 
     if (isDrawing || isDraggingBox) {
+      const wasDrawing = isDrawing;
       setIsDrawing(false);
       setIsDraggingBox(false);
       triggerHaptic();
@@ -290,24 +299,23 @@ export default function ControlPage() {
       if (selectionBox) {
         setIsZoomed(true);
 
-        // Emit zoom event 0.1 SECONDS (100ms) AFTER DRAG ENDS for smooth animated zoom-in!
-        if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
-        emitTimeoutRef.current = setTimeout(() => {
-          if (socket) {
-            socket.emit('zoom-area', {
-              x: selectionBox.startX,
-              y: selectionBox.startY,
-              width: selectionBox.width,
-              height: selectionBox.height,
-            });
-          }
-        }, 100);
+        // INSTANT SOCKET EMIT UPON RELEASING SHAPE (0ms Delay, No 0.1s gap!)
+        if (socket) {
+          socket.emit('zoom-area', {
+            x: selectionBox.startX,
+            y: selectionBox.startY,
+            width: selectionBox.width,
+            height: selectionBox.height,
+          });
+        }
 
-        // Enable Move/Pan mode AFTER 0.5 Seconds (500ms delay)
-        if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
-        panTimeoutRef.current = setTimeout(() => {
-          setIsPanReady(true);
-        }, 500);
+        // Enable Move/Pan mode AFTER 0.5 Seconds (500ms delay) if drawing a new shape
+        if (wasDrawing) {
+          if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
+          panTimeoutRef.current = setTimeout(() => {
+            setIsPanReady(true);
+          }, 500);
+        }
       }
     }
   };
@@ -420,7 +428,7 @@ export default function ControlPage() {
                 <ZoomIn className="w-3.5 h-3.5 text-[var(--dc-blue)]" /> 16:9 Drag & Zoom
               </h3>
               <p className="text-[10px] text-[var(--dc-text-secondary)]">
-                Drag (→) to select • Animated zoom applies 0.1s after releasing!
+                Drag (→) to select shape • Move/Pan is LIVE real-time!
               </p>
             </div>
 
