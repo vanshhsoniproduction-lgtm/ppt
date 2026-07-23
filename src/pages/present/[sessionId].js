@@ -12,7 +12,6 @@ import {
   EyeOff,
   StopCircle,
   Loader2,
-  Sparkles,
 } from 'lucide-react';
 
 export default function HostScreen() {
@@ -33,10 +32,8 @@ export default function HostScreen() {
   const [slideDirection, setSlideDirection] = useState(1); // 1 = Next (L->R), -1 = Prev (R->L)
   const currentSlideRef = useRef(0);
 
-  // 100% In-Memory RAM Image Caching State
+  // Instant Parallel Slide Image Caching
   const [cachedSlides, setCachedSlides] = useState([]);
-  const [isPreloading, setIsPreloading] = useState(true);
-  const [preloadProgress, setPreloadProgress] = useState(0);
 
   // Overlays
   const [isZoomed, setIsZoomed] = useState(false);
@@ -56,44 +53,22 @@ export default function HostScreen() {
     currentSlideRef.current = currentSlide;
   }, [currentSlide]);
 
-  // PRELOAD ALL SLIDES DIRECTLY INTO BLOB URLS IN RAM MEMORY
+  // INSTANT PARALLEL SLIDE IMAGE PRELOADING
   useEffect(() => {
     if (!deckId || !totalSlides) return;
 
-    let isMounted = true;
-    const slideMap = new Array(totalSlides);
-    let loadedCount = 0;
+    // Immediately populate default API routes so slides display with 0 delay
+    const initialUrls = Array.from({ length: totalSlides }, (_, i) => `/api/slides/${deckId}/${i}`);
+    setCachedSlides(initialUrls);
 
-    const loadAllSlides = async () => {
-      setIsPreloading(true);
-      setPreloadProgress(0);
-
-      for (let i = 0; i < totalSlides; i++) {
-        try {
-          const res = await fetch(`/api/slides/${deckId}/${i}`);
-          const blob = await res.blob();
-          const objectUrl = URL.createObjectURL(blob);
-          slideMap[i] = objectUrl;
-        } catch (e) {
-          slideMap[i] = `/api/slides/${deckId}/${i}`;
-        }
-        loadedCount++;
-        if (isMounted) {
-          setPreloadProgress(Math.round((loadedCount / totalSlides) * 100));
-        }
-      }
-
-      if (isMounted) {
-        setCachedSlides(slideMap);
-        setIsPreloading(false);
-      }
-    };
-
-    loadAllSlides();
-
-    return () => {
-      isMounted = false;
-    };
+    // Preload all slides in parallel in background
+    initialUrls.forEach((url, i) => {
+      const img = new Image();
+      img.onload = () => {
+        // Cached in browser memory
+      };
+      img.src = url;
+    });
   }, [deckId, totalSlides]);
 
   // Socket connection
@@ -218,24 +193,31 @@ export default function HostScreen() {
     setSessionActive(false);
   };
 
-  // Exact 16:9 Aspect Ratio Rectangular Zoom Calculation
+  // MATHEMATICALLY EXACT 100% UN-CROPPED 16:9 ZOOM TRANSFORM
   const calcZoom = () => {
-    if (!isZoomed || !zoomCoords) return { scale: 1, transformOrigin: '50% 50%' };
-    const { x, y, width, height } = zoomCoords;
+    if (!isZoomed || !zoomCoords) {
+      return { scale: 1, x: 0, y: 0 };
+    }
 
-    const pxX = parseFloat(x) || 0;
-    const pxY = parseFloat(y) || 0;
-    const pxW = Math.max(5, parseFloat(width) || 100);
-    const pxH = Math.max(5, parseFloat(height) || 100);
+    const pxX = parseFloat(zoomCoords.x) || 0;
+    const pxY = parseFloat(zoomCoords.y) || 0;
+    const pxW = Math.max(5, parseFloat(zoomCoords.width) || 100);
+    const pxH = Math.max(5, parseFloat(zoomCoords.height) || 100);
 
-    const cx = Math.min(100, Math.max(0, pxX + pxW / 2));
-    const cy = Math.min(100, Math.max(0, pxY + pxH / 2));
+    // Box center
+    const cx = pxX + pxW / 2;
+    const cy = pxY + pxH / 2;
 
+    // Calculate scale factor to make selection fill viewport width/height
     const scaleX = 100 / pxW;
     const scaleY = 100 / pxH;
-    const scale = Math.min(6, Math.max(1.2, Math.min(scaleX, scaleY)));
+    const scale = Math.min(8, Math.max(1.1, Math.min(scaleX, scaleY)));
 
-    return { scale, transformOrigin: `${cx}% ${cy}%` };
+    // Exact shift required to move (cx, cy) to screen center (50, 50)
+    const shiftX = (50 - cx) * scale;
+    const shiftY = (50 - cy) * scale;
+
+    return { scale, x: shiftX, y: shiftY };
   };
 
   const zoom = calcZoom();
@@ -253,10 +235,10 @@ export default function HostScreen() {
   const slideVariants = {
     enter: (dir) => ({
       x: dir > 0 ? '100%' : '-100%',
-      rotateY: dir > 0 ? 35 : -35,
-      scale: 0.84,
+      rotateY: dir > 0 ? 30 : -30,
+      scale: 0.88,
       opacity: 0,
-      filter: 'blur(12px)',
+      filter: 'blur(8px)',
     }),
     center: {
       x: '0%',
@@ -267,10 +249,10 @@ export default function HostScreen() {
     },
     exit: (dir) => ({
       x: dir < 0 ? '100%' : '-100%',
-      rotateY: dir < 0 ? 35 : -35,
-      scale: 0.84,
+      rotateY: dir < 0 ? 30 : -30,
+      scale: 0.88,
       opacity: 0,
-      filter: 'blur(12px)',
+      filter: 'blur(8px)',
     }),
   };
 
@@ -309,34 +291,6 @@ export default function HostScreen() {
       className="relative w-screen h-screen bg-black text-white overflow-hidden select-none flex items-center justify-center"
       style={{ perspective: '1200px' }}
     >
-      {/* Preloading HUD Progress Overlay */}
-      <AnimatePresence>
-        {isPreloading && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 space-y-4"
-          >
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-blue-500/30">
-              D
-            </div>
-            <div className="text-center space-y-1">
-              <h3 className="text-base font-bold text-white">Preloading High-Definition Slides</h3>
-              <p className="text-xs text-slate-400">Caching {totalSlides} pages directly into ultra-fast RAM memory</p>
-            </div>
-            <div className="w-64 bg-slate-800 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-700">
-              <motion.div
-                className="bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 h-full rounded-full"
-                animate={{ width: `${preloadProgress}%` }}
-                transition={{ duration: 0.15 }}
-              />
-            </div>
-            <span className="text-xs font-mono text-blue-400 font-bold">{preloadProgress}% Cached</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Blackout Overlay */}
       <AnimatePresence>
         {blackout && (
@@ -353,13 +307,21 @@ export default function HostScreen() {
         )}
       </AnimatePresence>
 
-      {/* Main 16:9 Presentation Canvas */}
-      <div className="w-full h-full relative flex items-center justify-center">
+      {/* Main 16:9 Presentation Canvas with Exact Math Zoom */}
+      <div className="w-full h-full relative flex items-center justify-center overflow-hidden">
         <motion.div
-          className="w-full h-full relative overflow-hidden flex items-center justify-center"
-          animate={{ scale: zoom.scale, transformOrigin: zoom.transformOrigin }}
-          transition={{ type: 'spring', stiffness: 190, damping: 25 }}
-          style={{ filter: cssFilter, transformStyle: 'preserve-3d' }}
+          className="w-full h-full relative flex items-center justify-center"
+          animate={{
+            scale: zoom.scale,
+            x: `${zoom.x}%`,
+            y: `${zoom.y}%`,
+          }}
+          transition={{ type: 'spring', stiffness: 200, damping: 26 }}
+          style={{
+            filter: cssFilter,
+            transformStyle: 'preserve-3d',
+            transformOrigin: '50% 50%',
+          }}
         >
           <AnimatePresence mode="wait" custom={slideDirection}>
             <motion.div

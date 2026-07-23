@@ -38,10 +38,8 @@ export default function ControlPage() {
   const [isZoomed, setIsZoomed] = useState(false);
   const [notes, setNotes] = useState([]);
 
-  // 100% Mobile RAM Image Blob Caching State
+  // Instant Slide Cache URLs
   const [cachedSlides, setCachedSlides] = useState([]);
-  const [isPreloading, setIsPreloading] = useState(true);
-  const [preloadProgress, setPreloadProgress] = useState(0);
 
   // Active tab: 'nav' | 'zoom' | 'effects' | 'laser' | 'notes'
   const [activeTab, setActiveTab] = useState('nav');
@@ -69,44 +67,18 @@ export default function ControlPage() {
     }
   };
 
-  // PRELOAD ALL SLIDES INTO MOBILE RAM MEMORY AS BLOB OBJECT URLS
+  // INSTANT PARALLEL SLIDE IMAGE PRELOADING FOR MOBILE
   useEffect(() => {
     if (!deckId || !totalSlides) return;
 
-    let isMounted = true;
-    const slideMap = new Array(totalSlides);
-    let loadedCount = 0;
+    const urls = Array.from({ length: totalSlides }, (_, i) => `/api/slides/${deckId}/${i}`);
+    setCachedSlides(urls);
 
-    const loadAllMobileSlides = async () => {
-      setIsPreloading(true);
-      setPreloadProgress(0);
-
-      for (let i = 0; i < totalSlides; i++) {
-        try {
-          const res = await fetch(`/api/slides/${deckId}/${i}`);
-          const blob = await res.blob();
-          const objectUrl = URL.createObjectURL(blob);
-          slideMap[i] = objectUrl;
-        } catch (e) {
-          slideMap[i] = `/api/slides/${deckId}/${i}`;
-        }
-        loadedCount++;
-        if (isMounted) {
-          setPreloadProgress(Math.round((loadedCount / totalSlides) * 100));
-        }
-      }
-
-      if (isMounted) {
-        setCachedSlides(slideMap);
-        setIsPreloading(false);
-      }
-    };
-
-    loadAllMobileSlides();
-
-    return () => {
-      isMounted = false;
-    };
+    // Preload into browser image cache in parallel
+    urls.forEach((url) => {
+      const img = new Image();
+      img.src = url;
+    });
   }, [deckId, totalSlides]);
 
   // ── Socket Connection ──
@@ -202,7 +174,7 @@ export default function ControlPage() {
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── 16:9 Rectangular Enforced Drag-to-Zoom Selection ──
+  // ── PERFECT 16:9 RECTANGULAR ENFORCED DRAG-TO-ZOOM SELECTION ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -218,8 +190,8 @@ export default function ControlPage() {
     triggerHaptic();
     const c = getCanvasCoords(e);
     setIsDrawing(true);
-    const w = 15;
-    const h = w / (16 / 9);
+    const w = 16;
+    const h = w / (16 / 9); // 16:9 Aspect Ratio
     setSelectionBox({
       startX: c.pctX,
       startY: c.pctY,
@@ -234,8 +206,8 @@ export default function ControlPage() {
     setSelectionBox(prev => {
       if (!prev) return null;
       const rawW = Math.abs(c.pctX - prev.startX);
-      const width = Math.max(8, rawW);
-      const height = width / (16 / 9);
+      const width = Math.max(10, rawW);
+      const height = width / (16 / 9); // 16:9 Presentation Ratio
 
       const startX = c.pctX < prev.startX ? c.pctX : prev.startX;
       const startY = c.pctY < prev.startY ? Math.max(0, prev.startY - height) : prev.startY;
@@ -281,7 +253,7 @@ export default function ControlPage() {
     if (socket) socket.emit('trigger-confetti');
   };
 
-  // Slide image source from RAM cache
+  // Slide image source
   const slideImgSrc = cachedSlides[currentSlide] || (deckId ? `/api/slides/${deckId}/${currentSlide}` : null);
   const currentNote = notes[currentSlide] || '';
 
@@ -511,34 +483,6 @@ export default function ControlPage() {
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] bg-[var(--dc-bg)] text-[var(--dc-text)] flex flex-col overflow-hidden select-none">
-      {/* Preloading Mobile HUD Progress Overlay */}
-      <AnimatePresence>
-        {isPreloading && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black/85 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 space-y-4"
-          >
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-blue-500/30">
-              D
-            </div>
-            <div className="text-center space-y-1">
-              <h3 className="text-base font-bold text-white">Caching Mobile Presentation</h3>
-              <p className="text-xs text-slate-400">Storing {totalSlides} slides in mobile RAM memory</p>
-            </div>
-            <div className="w-64 bg-slate-800 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-700">
-              <motion.div
-                className="bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 h-full rounded-full"
-                animate={{ width: `${preloadProgress}%` }}
-                transition={{ duration: 0.15 }}
-              />
-            </div>
-            <span className="text-xs font-mono text-blue-400 font-bold">{preloadProgress}% Cached</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Header */}
       <div className="dc-panel rounded-none px-4 py-2 flex items-center justify-between z-30 flex-shrink-0 border-b border-[var(--dc-border)]">
         <div className="flex items-center gap-2">
