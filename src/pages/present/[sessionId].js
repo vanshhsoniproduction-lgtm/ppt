@@ -66,15 +66,20 @@ export default function HostScreen() {
     });
   }, [deckId, totalSlides]);
 
-  // Socket connection
+  // Socket connection with Auto-Reconnect
   useEffect(() => {
     if (!sessionId) return;
 
-    const newSocket = io();
+    const newSocket = io({
+      reconnection: true,
+      reconnectionAttempts: 20,
+      reconnectionDelay: 1000,
+    });
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
       setIsConnected(true);
+      setSessionError(null);
       newSocket.emit('join-session', { sessionId });
     });
 
@@ -96,8 +101,7 @@ export default function HostScreen() {
     });
 
     newSocket.on('session-error', (data) => {
-      setSessionError(data.error);
-      setSessionActive(false);
+      console.warn('Socket session notice:', data.error);
     });
 
     newSocket.on('slide-updated', (data) => {
@@ -188,7 +192,7 @@ export default function HostScreen() {
     setSessionActive(false);
   };
 
-  // MATHEMATICALLY EXACT 100% UN-CROPPED 16:9 ZOOM TRANSFORM WITH SMOOTH ANIMATED ZOOM-IN & ZOOM-OUT
+  // MATHEMATICALLY EXACT 100% UN-CROPPED 16:9 ZOOM TRANSFORM WITH HARDWARE ACCELERATED GPU COMPOSITING
   const calcZoom = () => {
     if (!isZoomed || !zoomCoords) {
       return { scale: 1, x: 0, y: 0 };

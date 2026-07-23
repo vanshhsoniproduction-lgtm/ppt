@@ -50,17 +50,14 @@ export default function ControlPage() {
   const [spotlightActive, setSpotlightActive] = useState(false);
   const [blackoutActive, setBlackoutActive] = useState(false);
 
-  // 16:9 Left-to-Right Drag Selection & Delayed (0.5s) Box Shifting State
+  // 16:9 Left-to-Right Drag Selection & Live Box Shifting State
   const [isDrawing, setIsDrawing] = useState(false);
   const [isDraggingBox, setIsDraggingBox] = useState(false);
-  const [isPanReady, setIsPanReady] = useState(false); // Enabled 0.5s after releasing drag
   const [dragAnchor, setDragAnchor] = useState({ startX: 0, startY: 0, initialBoxX: 0, initialBoxY: 0 });
   const [selectionBox, setSelectionBox] = useState(null);
 
   const zoomCanvasRef = useRef(null);
-  const panTimeoutRef = useRef(null);
   const rafRef = useRef(null);
-  const lastEmitRef = useRef(0);
 
   // Laser
   const laserTrackpadRef = useRef(null);
@@ -88,15 +85,20 @@ export default function ControlPage() {
     });
   }, [deckId, totalSlides]);
 
-  // ── Socket Connection ──
+  // ── Socket Connection with Robust Auto-Reconnect ──
   useEffect(() => {
     if (!sessionId) return;
 
-    const newSocket = io();
+    const newSocket = io({
+      reconnection: true,
+      reconnectionAttempts: 20,
+      reconnectionDelay: 1000,
+    });
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
       setIsConnected(true);
+      setSessionError(null);
       newSocket.emit('join-session', { sessionId });
     });
 
@@ -120,13 +122,12 @@ export default function ControlPage() {
           width: state.zoomCoords.width,
           height: state.zoomCoords.height,
         });
-        setIsPanReady(true);
       }
     });
 
     newSocket.on('session-error', (data) => {
-      setSessionError(data.error);
-      setSessionActive(false);
+      // Don't kill session instantly on temporary reconnect glitches
+      console.warn('Socket session notice:', data.error);
     });
 
     newSocket.on('slide-updated', (data) => {
@@ -134,8 +135,6 @@ export default function ControlPage() {
       setTotalSlides(data.totalSlides);
       setIsZoomed(false);
       setSelectionBox(null);
-      setIsPanReady(false);
-      if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
     });
 
     newSocket.on('zoom-updated', (data) => {
@@ -154,8 +153,6 @@ export default function ControlPage() {
       setIsZoomed(false);
       setSelectionBox(null);
       setSpotlightActive(false);
-      setIsPanReady(false);
-      if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
     });
 
     newSocket.on('filter-updated', (data) => setFilters(data.filters));
@@ -201,12 +198,10 @@ export default function ControlPage() {
     setIsZoomed(false);
     setSelectionBox(null);
     setSpotlightActive(false);
-    setIsPanReady(false);
-    if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── INSTANT ZOOM ON SHAPE RELEASE + REAL-TIME LIVE MOVE/PANNING ──
+  // ── INSTANT ZOOM ON SHAPE RELEASE + 100% LIVE REAL-TIME MOVE/PANNING ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -222,21 +217,24 @@ export default function ControlPage() {
     triggerHaptic();
     const c = getCanvasCoords(e);
 
-    // MODE A: Shift/Pan existing box (If 0.5s has elapsed AND box exists)
-    if (isPanReady && selectionBox) {
-      setIsDraggingBox(true);
-      setDragAnchor({
-        startX: c.pctX,
-        startY: c.pctY,
-        initialBoxX: selectionBox.startX,
-        initialBoxY: selectionBox.startY,
-      });
-      return;
+    // MODE A: If selectionBox exists -> Touching near/inside box IMMEDIATELY enters LIVE MOVE MODE (0ms delay!)
+    if (selectionBox) {
+      const insideX = c.pctX >= (selectionBox.startX - 8) && c.pctX <= (selectionBox.startX + selectionBox.width + 8);
+      const insideY = c.pctY >= (selectionBox.startY - 8) && c.pctY <= (selectionBox.startY + selectionBox.height + 8);
+
+      if (insideX && insideY) {
+        setIsDraggingBox(true);
+        setDragAnchor({
+          startX: c.pctX,
+          startY: c.pctY,
+          initialBoxX: selectionBox.startX,
+          initialBoxY: selectionBox.startY,
+        });
+        return;
+      }
     }
 
-    // MODE B: Draw new shape locally on mobile (no socket emit while drawing!)
-    if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
-    setIsPanReady(false);
+    // MODE B: Otherwise -> Draw new shape locally on mobile (no socket emit while drawing!)
     setIsDrawing(true);
     setDragAnchor({ startX: c.pctX, startY: c.pctY, initialBoxX: c.pctX, initialBoxY: c.pctY });
   };
@@ -246,7 +244,7 @@ export default function ControlPage() {
     const c = getCanvasCoords(e);
 
     rafRef.current = requestAnimationFrame(() => {
-      // MODE A: LIVE REAL-TIME MOVE/PANNING of existing box
+      // MODE A: 100% LIVE REAL-TIME MOVE/PANNING
       if (isDraggingBox && selectionBox) {
         const deltaX = c.pctX - dragAnchor.startX;
         const deltaY = c.pctY - dragAnchor.startY;
@@ -258,9 +256,7 @@ export default function ControlPage() {
         setSelectionBox(updatedBox);
 
         // LIVE REAL-TIME SOCKET EMIT for smooth live panning on Host Screen
-        const now = Date.now();
-        if (socket && now - lastEmitRef.current > 33) {
-          lastEmitRef.current = now;
+        if (socket) {
           socket.emit('zoom-area', {
             x: newStartX,
             y: newStartY,
@@ -271,7 +267,7 @@ export default function ControlPage() {
         return;
       }
 
-      // MODE B: Draw new 16:9 box locally on mobile (ONLY Left-to-Right →, NO LIVE SOCKET EMIT)
+      // MODE B: Draw new 16:9 box locally on mobile (ONLY Left-to-Right →, NO LIVE SOCKET EMIT WHILE DRAWING)
       if (isDrawing) {
         if (c.pctX <= dragAnchor.startX) return;
 
@@ -291,7 +287,6 @@ export default function ControlPage() {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
 
     if (isDrawing || isDraggingBox) {
-      const wasDrawing = isDrawing;
       setIsDrawing(false);
       setIsDraggingBox(false);
       triggerHaptic();
@@ -307,14 +302,6 @@ export default function ControlPage() {
             width: selectionBox.width,
             height: selectionBox.height,
           });
-        }
-
-        // Enable Move/Pan mode AFTER 0.5 Seconds (500ms delay) if drawing a new shape
-        if (wasDrawing) {
-          if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
-          panTimeoutRef.current = setTimeout(() => {
-            setIsPanReady(true);
-          }, 500);
         }
       }
     }
@@ -346,14 +333,14 @@ export default function ControlPage() {
   const currentNote = notes[currentSlide] || '';
 
   // ── Error / Ended States ──
-  if (sessionError || !sessionActive) {
+  if (sessionError || (!sessionActive && deckId)) {
     return (
       <div className="fixed inset-0 h-[100dvh] bg-[var(--dc-bg)] flex items-center justify-center p-6">
         <div className="text-center space-y-4 max-w-xs">
           <StopCircle className="w-10 h-10 text-red-500 mx-auto" />
           <h1 className="text-lg font-bold">Session Ended</h1>
           <p className="text-sm text-[var(--dc-text-secondary)]">
-            {sessionError || 'This presentation session has been closed by the host.'}
+            {sessionError || 'This presentation session has been closed.'}
           </p>
           <button onClick={() => router.push('/')} className="dc-btn dc-btn-primary text-sm py-2.5 w-full">
             <ArrowLeft className="w-4 h-4" />
@@ -425,10 +412,10 @@ export default function ControlPage() {
             className="flex-1 flex flex-col justify-between gap-2 py-2 landscape:py-1">
             <div className="text-center flex-shrink-0">
               <h3 className="text-xs font-bold flex items-center justify-center gap-1.5">
-                <ZoomIn className="w-3.5 h-3.5 text-[var(--dc-blue)]" /> 16:9 Drag & Zoom
+                <ZoomIn className="w-3.5 h-3.5 text-[var(--dc-blue)]" /> 16:9 Drag & Live Shift Zoom
               </h3>
               <p className="text-[10px] text-[var(--dc-text-secondary)]">
-                Drag (→) to select shape • Move/Pan is LIVE real-time!
+                Drag (→) to select shape • Touch & Drag box to shift LIVE!
               </p>
             </div>
 
@@ -438,7 +425,7 @@ export default function ControlPage() {
               className="relative w-full aspect-[16/9] max-h-[60vh] bg-black rounded-2xl border border-[var(--dc-border)] shadow-lg overflow-hidden select-none flex items-center justify-center my-auto touch-none cursor-crosshair">
               {slideImgSrc && <img src={slideImgSrc} alt="Current slide" className="w-full h-full object-contain pointer-events-none" />}
 
-              {/* Active Selection Box with Pan Handle */}
+              {/* Active Selection Box with Move Handle */}
               {selectionBox && (
                 <div className="absolute border-2 border-[var(--dc-blue)] bg-blue-500/20 rounded-lg dc-zoom-selection cursor-move"
                   style={{
@@ -448,18 +435,9 @@ export default function ControlPage() {
                     height: `${selectionBox.height}%`,
                   }}
                 >
-                  <AnimatePresence>
-                    {isPanReady && (
-                      <motion.div
-                        initial={{ scale: 0, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        exit={{ scale: 0, opacity: 0 }}
-                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--dc-blue)] text-white p-1 rounded-full shadow-lg"
-                      >
-                        <Move className="w-3 h-3 animate-pulse" />
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--dc-blue)] text-white p-1 rounded-full shadow-lg">
+                    <Move className="w-3 h-3 animate-pulse" />
+                  </div>
                 </div>
               )}
             </div>
