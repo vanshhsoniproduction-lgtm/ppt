@@ -1,74 +1,49 @@
-import { saveDeckToDB } from './db';
+// Client-side PDF → JPEG slide conversion
+// Results are uploaded to server via REST API, not stored in IndexedDB
 
 export async function processPdfFile(file, username, progressCallback) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const pdfjsLib = await import('pdfjs-dist/build/pdf');
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+  const pdfjsLib = await import('pdfjs-dist/build/pdf');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
-      const arrayBuffer = await file.arrayBuffer();
-      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-      const pdf = await loadingTask.promise;
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const totalPages = pdf.numPages;
+  const slides = [];
 
-      const totalPages = pdf.numPages;
-      const slides = [];
+  for (let i = 1; i <= totalPages; i++) {
+    if (progressCallback) progressCallback(i, totalPages);
 
-      for (let i = 1; i <= totalPages; i++) {
-        if (progressCallback) {
-          progressCallback(i, totalPages);
-        }
+    const page = await pdf.getPage(i);
+    const unscaled = page.getViewport({ scale: 1.0 });
+    const scale = Math.min(2.0, 1920 / unscaled.width);
+    const viewport = page.getViewport({ scale });
 
-        const page = await pdf.getPage(i);
-        // Calculate optimal scale for max 1920px width for fast socket transmission
-        const unscaledViewport = page.getViewport({ scale: 1.0 });
-        const scale = Math.min(2.0, 1920 / unscaledViewport.width);
-        const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
 
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // Fill white background for PDF rendering
-        context.fillStyle = '#FFFFFF';
-        context.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    const imageUrl = canvas.toDataURL('image/jpeg', 0.82);
 
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport,
-        };
+    slides.push({
+      id: i,
+      type: 'image-slide',
+      title: `Slide ${i}`,
+      image: imageUrl,
+      notes: '',
+    });
+  }
 
-        await page.render(renderContext).promise;
-        // Compress canvas to JPEG 0.82 quality (90% smaller size for instant socket sync)
-        const imageUrl = canvas.toDataURL('image/jpeg', 0.82);
-
-        slides.push({
-          id: i,
-          type: 'image-slide',
-          title: `Slide ${i}`,
-          category: 'PDF PRESENTATION',
-          image: imageUrl,
-          notes: `Speaker notes for slide ${i}. Click 'Edit Notes' on your dashboard to customize.`,
-        });
-      }
-
-      const deck = {
-        id: `pdf-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-        username: (username || 'guest').toLowerCase(),
-        title: file.name.replace(/\.[^/.]+$/, ""),
-        subtitle: `Uploaded PDF (${totalPages} Slides)`,
-        author: username || 'User',
-        uploadDate: new Date().toISOString(),
-        slides: slides,
-      };
-
-      await saveDeckToDB(deck);
-      resolve(deck);
-    } catch (err) {
-      console.error('PDF parsing error:', err);
-      reject(err);
-    }
-  });
+  return {
+    id: `pdf-${Date.now()}`,
+    title: file.name.replace(/\.[^/.]+$/, ''),
+    username: (username || 'guest').toLowerCase(),
+    slides,
+  };
 }
 
 export function processImageFiles(files, username) {
@@ -78,9 +53,7 @@ export function processImageFiles(files, username) {
 
     Array.from(files).forEach((file, index) => {
       const img = new Image();
-      const url = URL.createObjectURL(file);
-
-      img.onload = async () => {
+      img.onload = () => {
         const canvas = document.createElement('canvas');
         const scale = Math.min(1.0, 1920 / img.width);
         canvas.width = img.width * scale;
@@ -93,30 +66,23 @@ export function processImageFiles(files, username) {
         slides.push({
           id: index + 1,
           type: 'image-slide',
-          title: file.name.replace(/\.[^/.]+$/, ""),
-          category: 'IMAGE SLIDE',
+          title: file.name.replace(/\.[^/.]+$/, ''),
           image: imageUrl,
-          notes: `Speaker notes for slide ${index + 1}.`,
+          notes: '',
         });
         processed++;
 
         if (processed === files.length) {
           slides.sort((a, b) => a.id - b.id);
-          const deck = {
-            id: `img-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+          resolve({
+            id: `img-${Date.now()}`,
+            title: files[0].name.replace(/\.[^/.]+$/, '') + (files.length > 1 ? ` (+${files.length - 1})` : ''),
             username: (username || 'guest').toLowerCase(),
-            title: files[0].name.replace(/\.[^/.]+$/, "") + (files.length > 1 ? ` (+${files.length - 1} slides)` : ''),
-            subtitle: `Uploaded Images (${slides.length} Slides)`,
-            author: username || 'User',
-            uploadDate: new Date().toISOString(),
-            slides: slides,
-          };
-
-          await saveDeckToDB(deck);
-          resolve(deck);
+            slides,
+          });
         }
       };
-      img.src = url;
+      img.src = URL.createObjectURL(file);
     });
   });
 }

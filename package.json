@@ -1,6 +1,6 @@
 {
-  "name": "ppt-control-system",
-  "version": "1.0.0",
+  "name": "deckcast",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
     "dev": "node server.js",

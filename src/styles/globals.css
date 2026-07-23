@@ -4,127 +4,197 @@
 
 @layer base {
   :root {
-    --ios-bg-light: #f2f2f7;
-    --ios-card-light: rgba(255, 255, 255, 0.78);
-    --ios-border-light: rgba(255, 255, 255, 0.85);
-    --ios-text-dark: #1c1c1e;
-    --ios-text-subtle: #6c6c70;
-    --ios-blue: #007aff;
-    --ios-radius: 20px;
+    --dc-bg: #f5f5f7;
+    --dc-card: rgba(255, 255, 255, 0.78);
+    --dc-border: rgba(0, 0, 0, 0.06);
+    --dc-text: #1d1d1f;
+    --dc-text-secondary: #86868b;
+    --dc-blue: #0071e3;
+    --dc-blue-hover: #0077ed;
+    --dc-green: #30d158;
+    --dc-red: #ff453a;
+    --dc-radius: 16px;
   }
 
   body {
-    @apply bg-[#F2F2F7] text-[#1C1C1E] antialiased overflow-x-hidden selection:bg-blue-500/20 selection:text-blue-900;
+    @apply bg-[var(--dc-bg)] text-[var(--dc-text)] antialiased overflow-x-hidden;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: rgba(0, 113, 227, 0.15);
+    color: #0071e3;
   }
 }
 
 @layer components {
-  /* Apple Minimal Liquid Glass Light Theme Utility Classes */
-  .glass-panel-light {
+  /* ── Glass Panels ── */
+  .dc-panel {
     background: rgba(255, 255, 255, 0.72);
-    backdrop-filter: blur(30px) saturate(190%);
-    -webkit-backdrop-filter: blur(30px) saturate(190%);
-    border: 1px solid rgba(255, 255, 255, 0.85);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.8);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.04), 0 0 0 0.5px rgba(0, 0, 0, 0.03);
+    border-radius: var(--dc-radius);
+  }
+
+  .dc-card {
+    background: rgba(255, 255, 255, 0.68);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+    border-radius: 14px;
+    transition: all 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
+  }
+
+  .dc-card:hover {
+    background: rgba(255, 255, 255, 0.88);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  }
+
+  /* ── Buttons ── */
+  .dc-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 12px;
+    transition: all 0.15s ease;
+    user-select: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .dc-btn:active {
+    transform: scale(0.96);
+  }
+
+  .dc-btn-primary {
+    background: var(--dc-blue);
+    color: #fff;
+    border: none;
+    box-shadow: 0 2px 8px rgba(0, 113, 227, 0.25);
+  }
+
+  .dc-btn-primary:hover {
+    background: var(--dc-blue-hover);
+  }
+
+  .dc-btn-secondary {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--dc-text);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+  }
+
+  .dc-btn-secondary:hover {
+    background: rgba(0, 0, 0, 0.08);
+  }
+
+  .dc-btn-danger {
+    background: var(--dc-red);
+    color: #fff;
+    border: none;
+    box-shadow: 0 2px 8px rgba(255, 69, 58, 0.2);
+  }
+
+  .dc-btn-ghost {
+    background: transparent;
+    color: var(--dc-text-secondary);
+    border: none;
+    padding: 6px 10px;
+  }
+
+  .dc-btn-ghost:hover {
+    background: rgba(0, 0, 0, 0.04);
+    color: var(--dc-text);
+  }
+
+  /* ── Input ── */
+  .dc-input {
+    width: 100%;
+    padding: 12px 16px;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--dc-text);
+    background: rgba(0, 0, 0, 0.03);
+    border: 1.5px solid rgba(0, 0, 0, 0.08);
+    border-radius: 12px;
+    outline: none;
+    transition: all 0.2s ease;
+  }
+
+  .dc-input:focus {
+    border-color: var(--dc-blue);
+    box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+    background: #fff;
+  }
+
+  /* ── Mobile Dock ── */
+  .dc-dock {
+    background: rgba(255, 255, 255, 0.82);
+    backdrop-filter: blur(30px) saturate(200%);
+    -webkit-backdrop-filter: blur(30px) saturate(200%);
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.06);
     border-radius: 24px;
   }
 
-  .glass-card-light {
-    background: rgba(255, 255, 255, 0.65);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.8);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04);
-    border-radius: 20px;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  /* ── Status Badges ── */
+  .dc-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 100px;
+    letter-spacing: 0.02em;
   }
 
-  .glass-card-light:hover {
-    background: rgba(255, 255, 255, 0.85);
-    border-color: rgba(255, 255, 255, 1);
-    box-shadow: 0 12px 32px rgba(0, 122, 255, 0.1);
+  .dc-badge-live {
+    background: rgba(48, 209, 88, 0.12);
+    color: #248a3d;
   }
 
-  .glass-button-light {
-    background: rgba(255, 255, 255, 0.7);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.9);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 1);
-    border-radius: 16px;
-    color: #1c1c1e;
-    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-    user-select: none;
-    touch-action: manipulation;
+  .dc-badge-ended {
+    background: rgba(255, 69, 58, 0.1);
+    color: #d70015;
   }
 
-  .glass-button-light:active {
-    transform: scale(0.95);
-    background: rgba(242, 242, 247, 0.9);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
-  }
-
-  .glass-button-primary {
-    background: linear-gradient(135deg, #007aff 0%, #0056b3 100%);
-    color: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    box-shadow: 0 6px 20px rgba(0, 122, 255, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.3);
-    border-radius: 16px;
-    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-    user-select: none;
-  }
-
-  .glass-button-primary:active {
-    transform: scale(0.95);
-    box-shadow: 0 3px 10px rgba(0, 122, 255, 0.5);
-  }
-
-  .glass-button-danger {
-    background: linear-gradient(135deg, #ff3b30 0%, #d70015 100%);
-    color: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    box-shadow: 0 6px 20px rgba(255, 59, 48, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.3);
-    border-radius: 16px;
-    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .glass-button-danger:active {
-    transform: scale(0.95);
-    box-shadow: 0 3px 10px rgba(255, 59, 48, 0.4);
-  }
-
-  .glass-dock-light {
-    background: rgba(255, 255, 255, 0.8);
-    backdrop-filter: blur(30px) saturate(200%);
-    -webkit-backdrop-filter: blur(30px) saturate(200%);
-    border: 1px solid rgba(255, 255, 255, 0.95);
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08), inset 0 1px 1px rgba(255, 255, 255, 1);
-    border-radius: 28px;
+  /* ── Separator ── */
+  .dc-divider {
+    height: 1px;
+    background: rgba(0, 0, 0, 0.06);
+    border: none;
+    margin: 0;
   }
 }
 
-/* Custom Scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 999px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25);
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); border-radius: 100px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.2); }
+
+/* ── Bounding box animation for zoom selection ── */
+@keyframes zoomPulse {
+  0%, 100% { border-color: var(--dc-blue); box-shadow: 0 0 12px rgba(0, 113, 227, 0.2); }
+  50% { border-color: #30d158; box-shadow: 0 0 16px rgba(48, 209, 88, 0.25); }
 }
 
-@keyframes boxGlowLight {
-  0%, 100% { border-color: rgba(0, 122, 255, 0.9); box-shadow: 0 0 15px rgba(0, 122, 255, 0.3); }
-  50% { border-color: rgba(52, 199, 89, 0.9); box-shadow: 0 0 20px rgba(52, 199, 89, 0.4); }
+.dc-zoom-selection {
+  animation: zoomPulse 2s infinite ease-in-out;
 }
 
-.bounding-box-active-light {
-  animation: boxGlowLight 2s infinite ease-in-out;
+/* ── Safe-area for mobile ── */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .dc-safe-bottom {
+    padding-bottom: calc(env(safe-area-inset-bottom) + 8px);
+  }
 }

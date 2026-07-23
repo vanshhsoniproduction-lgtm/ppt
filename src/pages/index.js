@@ -1,698 +1,538 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/router';
 import { QRCodeSVG } from 'qrcode.react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { io } from 'socket.io-client';
 import {
-  Tv,
-  Smartphone,
-  Sparkles,
-  UploadCloud,
-  User,
+  Upload,
   FileText,
   Trash2,
+  Play,
+  LogOut,
+  User,
+  Radio,
+  Users,
+  X,
+  StopCircle,
+  ExternalLink,
+  Smartphone,
+  Calendar,
+  ArrowRight,
+  Loader2,
   Eye,
   Edit3,
-  Play,
-  ArrowRight,
-  LogOut,
-  Calendar,
-  X,
   CheckCircle2,
-  RefreshCw
+  Monitor,
 } from 'lucide-react';
 import { processPdfFile, processImageFiles } from '../utils/pdfProcessor';
-import { getUserDecksFromDB, saveDeckToDB, deleteDeckFromDB, updateSlideNoteInDB } from '../utils/db';
 
-export default function Home() {
+export default function Dashboard() {
+  const router = useRouter();
   const [username, setUsername] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [userDecks, setUserDecks] = useState([]);
-  const [socket, setSocket] = useState(null);
 
-  // Active Presentation Session State
-  const [activeDeck, setActiveDeck] = useState(null);
+  // Decks from server
+  const [decks, setDecks] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
 
+  // Sessions from server
+  const [activeSessions, setActiveSessions] = useState([]);
+
   // Modals
-  const [editingDeck, setEditingDeck] = useState(null);
   const [previewDeck, setPreviewDeck] = useState(null);
+  const [editingNotes, setEditingNotes] = useState(null); // { deckId, deckTitle, notes, slideCount }
 
-  const [remoteUrl, setRemoteUrl] = useState('');
+  // QR display
+  const [qrSession, setQrSession] = useState(null); // { sessionId, deckTitle }
 
+  // ── Auth ──
   useEffect(() => {
-    const savedUser = localStorage.getItem('ppt_username');
-    if (savedUser) {
-      setUsername(savedUser);
+    const saved = localStorage.getItem('deckcast_user');
+    if (saved) {
+      setUsername(saved);
       setIsLoggedIn(true);
-      loadUserDecks(savedUser);
     }
   }, []);
 
-  const loadUserDecks = async (user) => {
-    try {
-      const decks = await getUserDecksFromDB(user);
-      setUserDecks(decks);
-      if (decks.length > 0 && !activeDeck) {
-        setActiveDeck(decks[0]);
-      }
-      return decks;
-    } catch (e) {
-      console.error('Failed to load user decks:', e);
-      return [];
-    }
-  };
-
-  // MULTI-DEVICE WORKSPACE REAL-TIME FILE SYNC
-  useEffect(() => {
-    if (isLoggedIn && username) {
-      const roomParam = username.toUpperCase() + '-ROOM';
-      const newSocket = io();
-      setSocket(newSocket);
-
-      newSocket.on('connect', async () => {
-        newSocket.emit('join-room', { roomId: roomParam, role: 'dashboard' });
-
-        // Load local decks and emit to room server state
-        const localDecks = await getUserDecksFromDB(username);
-        if (localDecks && localDecks.length > 0) {
-          newSocket.emit('sync-user-decks', { roomId: roomParam, userDecks: localDecks });
-        }
-      });
-
-      // Save synced user decks from room into IndexedDB
-      const handleSyncedDecks = async (syncedDecks) => {
-        if (syncedDecks && Array.isArray(syncedDecks) && syncedDecks.length > 0) {
-          for (const d of syncedDecks) {
-            await saveDeckToDB(d);
-          }
-          await loadUserDecks(username);
-          if (!activeDeck && syncedDecks[0]) {
-            setActiveDeck(syncedDecks[0]);
-          }
-        }
-      };
-
-      newSocket.on('room-state', async (state) => {
-        if (state.userDecks && state.userDecks.length > 0) {
-          await handleSyncedDecks(state.userDecks);
-        } else if (state.customDeck) {
-          await saveDeckToDB(state.customDeck);
-          await loadUserDecks(username);
-          setActiveDeck(state.customDeck);
-        }
-      });
-
-      newSocket.on('user-decks-synced', async (data) => {
-        if (data.userDecks) {
-          await handleSyncedDecks(data.userDecks);
-        }
-      });
-
-      newSocket.on('deck-uploaded', async (data) => {
-        if (data.deck) {
-          await saveDeckToDB(data.deck);
-          await loadUserDecks(username);
-          setActiveDeck(data.deck);
-        }
-      });
-
-      newSocket.on('client-joined', async () => {
-        const localDecks = await getUserDecksFromDB(username);
-        if (localDecks && localDecks.length > 0) {
-          newSocket.emit('sync-user-decks', { roomId: roomParam, userDecks: localDecks });
-        }
-      });
-
-      return () => {
-        newSocket.disconnect();
-      };
-    }
-  }, [isLoggedIn, username]);
-
-  // DYNAMIC QR CODE URL GENERATION
-  useEffect(() => {
-    if (typeof window !== 'undefined' && isLoggedIn && username) {
-      const origin = window.location.origin;
-      const room = username.toUpperCase() + '-ROOM';
-      const deckParam = activeDeck ? `&deck=${activeDeck.id}` : '';
-      setRemoteUrl(`${origin}/remote?room=${room}&user=${username}${deckParam}`);
-    }
-  }, [username, isLoggedIn, activeDeck]);
-
-  const handleLogin = async (e) => {
+  const handleLogin = (e) => {
     e.preventDefault();
-    if (username.trim()) {
-      const cleanUser = username.trim().toLowerCase();
-      setUsername(cleanUser);
-      localStorage.setItem('ppt_username', cleanUser);
-      setIsLoggedIn(true);
-      const decks = await loadUserDecks(cleanUser);
-      if (socket && decks.length > 0) {
-        socket.emit('sync-user-decks', { roomId: cleanUser.toUpperCase() + '-ROOM', userDecks: decks });
-      }
-    }
+    const clean = username.trim().toLowerCase();
+    if (!clean) return;
+    setUsername(clean);
+    localStorage.setItem('deckcast_user', clean);
+    setIsLoggedIn(true);
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('ppt_username');
+    localStorage.removeItem('deckcast_user');
     setUsername('');
     setIsLoggedIn(false);
-    setUserDecks([]);
-    setActiveDeck(null);
+    setDecks([]);
+    setActiveSessions([]);
   };
 
+  // ── Fetch data from server ──
+  const fetchDecks = useCallback(async () => {
+    if (!username) return;
+    try {
+      const res = await fetch(`/api/decks?owner=${username}`);
+      const data = await res.json();
+      setDecks(data);
+    } catch (e) {
+      console.error('Failed to fetch decks:', e);
+    }
+  }, [username]);
+
+  const fetchSessions = useCallback(async () => {
+    if (!username) return;
+    try {
+      const res = await fetch(`/api/sessions?owner=${username}`);
+      const data = await res.json();
+      setActiveSessions(data);
+    } catch (e) {
+      console.error('Failed to fetch sessions:', e);
+    }
+  }, [username]);
+
+  useEffect(() => {
+    if (isLoggedIn && username) {
+      fetchDecks();
+      fetchSessions();
+      // Poll sessions every 5s for live client count
+      const interval = setInterval(fetchSessions, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [isLoggedIn, username, fetchDecks, fetchSessions]);
+
+  // ── Upload ──
   const handleFileUpload = async (e) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    e.target.value = ''; // Reset input
 
     setIsUploading(true);
-    setUploadProgress('Reading presentation pages...');
+    setUploadProgress('Processing file...');
 
     try {
       const file = files[0];
-      let newDeck = null;
+      let slides = [];
+      let title = file.name.replace(/\.[^/.]+$/, '');
 
       if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-        newDeck = await processPdfFile(file, username, (p, t) => {
-          setUploadProgress(`Optimizing page ${p} of ${t}...`);
+        // Client-side PDF → JPEG conversion
+        const deck = await processPdfFile(file, username, (p, t) => {
+          setUploadProgress(`Converting page ${p} of ${t}...`);
         });
+        slides = deck.slides.map(s => s.image);
+        title = deck.title;
       } else {
-        newDeck = await processImageFiles(files, username);
+        // Image files
+        const deck = await processImageFiles(files, username);
+        slides = deck.slides.map(s => s.image);
+        title = deck.title;
       }
 
-      if (newDeck) {
-        setActiveDeck(newDeck);
-        await saveDeckToDB(newDeck);
-        const updatedDecks = await loadUserDecks(username);
+      setUploadProgress('Uploading to server...');
 
-        // Broadcast file to all devices in workspace room
-        if (socket) {
-          const roomParam = username.toUpperCase() + '-ROOM';
-          socket.emit('upload-deck', { roomId: roomParam, deck: newDeck });
-          socket.emit('sync-user-decks', { roomId: roomParam, userDecks: updatedDecks });
-        }
+      // Upload processed slides to server
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          owner: username,
+          slides,
+          notes: slides.map((_, i) => `Speaker notes for slide ${i + 1}`),
+        }),
+      });
 
-        setUploadProgress(`Successfully loaded & synced "${newDeck.title}"!`);
-      }
+      if (!res.ok) throw new Error('Upload failed');
+
+      const result = await res.json();
+      setUploadProgress(`"${result.title}" uploaded — ${result.slideCount} slides`);
+      await fetchDecks();
     } catch (err) {
       console.error(err);
-      setUploadProgress('Failed to read file. Please upload a valid PDF or Image slides.');
+      setUploadProgress('Upload failed. Please try again.');
     } finally {
-      setIsUploading(false);
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress('');
+      }, 2500);
     }
   };
 
-  const handleManualSync = async () => {
-    if (socket && username) {
-      const roomParam = username.toUpperCase() + '-ROOM';
-      socket.emit('join-room', { roomId: roomParam, role: 'dashboard' });
-      const localDecks = await getUserDecksFromDB(username);
-      if (localDecks && localDecks.length > 0) {
-        socket.emit('sync-user-decks', { roomId: roomParam, userDecks: localDecks });
-      }
+  // ── Create Session ──
+  const handleCreateSession = async (deckId) => {
+    try {
+      const res = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deckId, owner: username }),
+      });
+
+      if (!res.ok) throw new Error('Failed to create session');
+
+      const session = await res.json();
+      setQrSession({ sessionId: session.id, deckTitle: session.deckTitle, totalSlides: session.totalSlides });
+      await fetchSessions();
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const handleDeleteDeck = async (deckId, e) => {
-    e.stopPropagation();
-    if (confirm('Are you sure you want to delete this presentation file?')) {
-      await deleteDeckFromDB(deckId);
-      if (activeDeck && activeDeck.id === deckId) {
-        setActiveDeck(null);
-      }
-      const remainingDecks = await loadUserDecks(username);
-      if (socket) {
-        const roomParam = username.toUpperCase() + '-ROOM';
-        socket.emit('sync-user-decks', { roomId: roomParam, userDecks: remainingDecks });
-      }
+  // ── End Session ──
+  const handleEndSession = async (sessionId) => {
+    try {
+      await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      await fetchSessions();
+      if (qrSession && qrSession.sessionId === sessionId) setQrSession(null);
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const handleSaveNote = async (deckId, slideIndex, noteText) => {
-    await updateSlideNoteInDB(deckId, slideIndex, noteText);
-    const updatedDecks = await loadUserDecks(username);
-    if (editingDeck && editingDeck.id === deckId) {
-      const updatedSlides = [...editingDeck.slides];
-      updatedSlides[slideIndex].notes = noteText;
-      const updatedDeck = { ...editingDeck, slides: updatedSlides };
-      setEditingDeck(updatedDeck);
-      if (socket) {
-        const roomParam = username.toUpperCase() + '-ROOM';
-        socket.emit('upload-deck', { roomId: roomParam, deck: updatedDeck });
-        socket.emit('sync-user-decks', { roomId: roomParam, userDecks: updatedDecks });
-      }
+  // ── Delete Deck ──
+  const handleDeleteDeck = async (deckId) => {
+    if (!confirm('Delete this presentation?')) return;
+    try {
+      await fetch(`/api/decks/${deckId}`, { method: 'DELETE' });
+      await fetchDecks();
+      await fetchSessions();
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const groupDecksByDate = (decks) => {
+  // ── Save Note ──
+  const handleSaveNote = async (deckId, slideIndex, note) => {
+    try {
+      await fetch(`/api/decks/${deckId}/notes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slideIndex, note }),
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // ── Open Notes Editor ──
+  const handleOpenNotes = async (deck) => {
+    try {
+      const res = await fetch(`/api/decks/${deck.id}`);
+      const data = await res.json();
+      setEditingNotes({
+        deckId: deck.id,
+        deckTitle: deck.title,
+        notes: data.notes || [],
+        slideCount: data.slideCount,
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // ── Date grouping ──
+  const groupByDate = (items) => {
     const groups = { Today: [], Yesterday: [], Earlier: [] };
     const today = new Date().toDateString();
+    const yesterday = new Date(Date.now() - 86400000).toDateString();
 
-    const yesterdayDate = new Date();
-    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-    const yesterday = yesterdayDate.toDateString();
-
-    decks.forEach(deck => {
-      const deckDate = new Date(deck.uploadDate).toDateString();
-      if (deckDate === today) {
-        groups.Today.push(deck);
-      } else if (deckDate === yesterday) {
-        groups.Yesterday.push(deck);
-      } else {
-        groups.Earlier.push(deck);
-      }
+    items.forEach(item => {
+      const d = new Date(item.uploadDate).toDateString();
+      if (d === today) groups.Today.push(item);
+      else if (d === yesterday) groups.Yesterday.push(item);
+      else groups.Earlier.push(item);
     });
 
     return groups;
   };
 
-  const groupedDecks = groupDecksByDate(userDecks);
-  const activeRoom = (username ? username.toUpperCase() + '-ROOM' : 'DEMO').trim();
+  const grouped = groupByDate(decks);
+  const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+
+  // ── RENDER ──
+
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-sm dc-panel p-8 space-y-6 text-center"
+        >
+          <div className="space-y-2">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-[var(--dc-blue)] flex items-center justify-center text-white text-xl font-bold shadow-lg shadow-blue-500/20">
+              D
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight">DeckCast</h1>
+            <p className="text-sm text-[var(--dc-text-secondary)]">
+              Real-time presentation control
+            </p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-3">
+            <input
+              type="text"
+              required
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Enter your name"
+              className="dc-input"
+              autoFocus
+            />
+            <button type="submit" className="dc-btn dc-btn-primary w-full py-3 text-sm">
+              Get Started
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </form>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-[#F2F2F7] text-[#1C1C1E] relative flex flex-col justify-between p-4 md:p-8">
+    <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <header className="max-w-7xl mx-auto w-full flex items-center justify-between z-10 py-2 border-b border-slate-200">
-        <div className="flex items-center space-x-3">
-          <div className="w-10 h-10 rounded-2xl bg-blue-600 flex items-center justify-center shadow-md shadow-blue-500/20 text-white font-bold text-lg">
-            A
+      <header className="sticky top-0 z-40 dc-panel border-b border-[var(--dc-border)] rounded-none px-4 md:px-8 py-3">
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-[var(--dc-blue)] flex items-center justify-center text-white text-sm font-bold">
+              D
+            </div>
+            <h1 className="text-base font-bold tracking-tight hidden sm:block">DeckCast</h1>
           </div>
-          <div>
-            <h1 className="text-lg font-extrabold tracking-tight text-[#1C1C1E] leading-none">
-              AuraSync Enterprise
-            </h1>
-            <span className="text-xs text-slate-500 font-medium">Real-Time PDF & PPT Presentation Platform</span>
+
+          <div className="flex items-center gap-2">
+            <div className="dc-badge dc-badge-live">
+              <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              @{username}
+            </div>
+            <button onClick={handleLogout} className="dc-btn dc-btn-ghost text-xs">
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
           </div>
         </div>
-
-        {isLoggedIn && (
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={handleManualSync}
-              className="p-1.5 rounded-full bg-white border border-slate-200 text-blue-600 hover:bg-blue-50 shadow-sm flex items-center space-x-1 text-xs font-bold px-2.5"
-              title="Sync Files Across Devices"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Sync</span>
-            </button>
-
-            <div className="px-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-semibold text-slate-800 shadow-sm flex items-center space-x-2">
-              <User className="w-3.5 h-3.5 text-blue-600" />
-              <span>@{username}</span>
-            </div>
-            <button
-              onClick={handleLogout}
-              className="px-3 py-1.5 rounded-full bg-slate-200/80 hover:bg-slate-300/80 text-xs font-semibold text-slate-700 transition-colors flex items-center space-x-1"
-              title="Logout"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Logout</span>
-            </button>
-          </div>
-        )}
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto w-full my-auto py-6 z-10 flex-1">
-        {!isLoggedIn ? (
-          /* Step 1: User Login */
-          <motion.div
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="max-w-md mx-auto glass-panel-light p-8 text-center space-y-6 shadow-xl border border-white"
-          >
-            <div className="w-16 h-16 mx-auto rounded-3xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-600">
-              <User className="w-8 h-8" />
+      {/* Main */}
+      <main className="flex-1 max-w-6xl mx-auto w-full px-4 md:px-8 py-6 space-y-8">
+
+        {/* Active Sessions */}
+        {activeSessions.length > 0 && (
+          <section className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Radio className="w-4 h-4 text-green-600" />
+              <h2 className="text-sm font-bold uppercase tracking-wider text-[var(--dc-text-secondary)]">
+                Live Sessions
+              </h2>
             </div>
 
-            <div>
-              <h2 className="text-2xl font-extrabold text-[#1C1C1E]">Enter your Username</h2>
-              <p className="text-xs text-slate-500 mt-1">
-                Creates your personal enterprise presentation workspace.
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {activeSessions.map(session => (
+                <div key={session.id} className="dc-card p-4 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div className="min-w-0">
+                      <div className="text-xs font-mono font-bold text-[var(--dc-blue)] tracking-wider">
+                        {session.id}
+                      </div>
+                      <div className="text-sm font-semibold truncate mt-0.5">{session.deckTitle}</div>
+                      <div className="text-xs text-[var(--dc-text-secondary)] mt-0.5">
+                        Slide {session.currentSlide + 1}/{session.totalSlides} • {session.connectedClients} connected
+                      </div>
+                    </div>
+                    <div className="dc-badge dc-badge-live flex-shrink-0">Live</div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Link
+                      href={`/present/${session.id}`}
+                      className="dc-btn dc-btn-primary flex-1 text-xs py-2"
+                    >
+                      <Monitor className="w-3.5 h-3.5" />
+                      Host
+                    </Link>
+                    <button
+                      onClick={() => setQrSession({ sessionId: session.id, deckTitle: session.deckTitle, totalSlides: session.totalSlides })}
+                      className="dc-btn dc-btn-secondary text-xs py-2"
+                    >
+                      <Smartphone className="w-3.5 h-3.5" />
+                      QR
+                    </button>
+                    <button
+                      onClick={() => handleEndSession(session.id)}
+                      className="dc-btn dc-btn-danger text-xs py-2"
+                    >
+                      <StopCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Upload */}
+        <section className="dc-panel p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-bold flex items-center gap-2">
+              <Upload className="w-4 h-4 text-[var(--dc-blue)]" />
+              Upload Presentation
+            </h2>
+            <span className="text-xs text-[var(--dc-text-secondary)]">PDF or Images</span>
+          </div>
+
+          <label className="flex flex-col items-center justify-center border-2 border-dashed border-[rgba(0,0,0,0.1)] hover:border-[var(--dc-blue)] bg-[rgba(0,0,0,0.01)] hover:bg-[rgba(0,113,227,0.02)] rounded-2xl p-8 cursor-pointer transition-all group">
+            <Upload className="w-8 h-8 text-[var(--dc-text-secondary)] group-hover:text-[var(--dc-blue)] transition-colors mb-2" />
+            <span className="text-sm font-semibold">Drop file or click to browse</span>
+            <span className="text-xs text-[var(--dc-text-secondary)] mt-1">PDF, PNG, JPG — converted to HD slides</span>
+            <input
+              type="file"
+              accept=".pdf,image/*"
+              multiple
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+          </label>
+
+          {(isUploading || uploadProgress) && (
+            <div className="flex items-center justify-center gap-2 text-xs font-medium text-[var(--dc-blue)]">
+              {isUploading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {uploadProgress}
+            </div>
+          )}
+        </section>
+
+        {/* My Decks */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <FileText className="w-5 h-5 text-[var(--dc-blue)]" />
+              My Presentations
+            </h2>
+            <span className="text-xs text-[var(--dc-text-secondary)]">{decks.length} files</span>
+          </div>
+
+          {decks.length === 0 ? (
+            <div className="dc-card p-10 text-center space-y-2">
+              <FileText className="w-8 h-8 text-[var(--dc-text-secondary)] mx-auto" />
+              <p className="text-sm font-medium text-[var(--dc-text-secondary)]">
+                No presentations yet. Upload a PDF to get started.
               </p>
             </div>
-
-            <form onSubmit={handleLogin} className="space-y-4">
-              <input
-                type="text"
-                required
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. vansh"
-                className="w-full bg-white border border-slate-300 rounded-2xl px-5 py-3.5 text-base text-[#1C1C1E] focus:outline-none focus:ring-2 focus:ring-blue-500/40 shadow-sm font-medium"
-              />
-
-              <button
-                type="submit"
-                className="w-full glass-button-primary py-3.5 text-base font-bold flex items-center justify-center space-x-2 shadow-md shadow-blue-500/30"
-              >
-                <span>Access Workspace</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </form>
-          </motion.div>
-        ) : (
-          /* Step 2: Dashboard Workspace */
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            {/* Left Section: Upload & My Files Section */}
-            <div className="lg:col-span-8 space-y-6">
-              {/* Upload Drop Zone */}
-              <div className="glass-panel-light p-6 space-y-4 border border-white shadow-sm">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <UploadCloud className="w-5 h-5 text-blue-600" />
-                    <h3 className="text-base font-bold text-[#1C1C1E]">Upload Presentation (PDF / Images)</h3>
+          ) : (
+            Object.entries(grouped).map(([label, items]) =>
+              items.length > 0 && (
+                <div key={label} className="space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[var(--dc-text-secondary)] pl-1">
+                    <Calendar className="w-3.5 h-3.5" />
+                    {label}
                   </div>
-                  <span className="text-xs font-mono text-slate-400">PDF, PNG, JPG</span>
-                </div>
 
-                <label className="border-2 border-dashed border-slate-300 hover:border-blue-500 bg-white/80 rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer transition-all hover:bg-blue-500/5 group">
-                  <UploadCloud className="w-10 h-10 text-slate-400 group-hover:text-blue-600 transition-colors mb-2" />
-                  <span className="text-sm font-bold text-slate-800">Drop PDF or PPT Presentation File</span>
-                  <span className="text-xs text-slate-500 mt-1">Converts all PDF pages into high-definition presentation slides</span>
-                  <input
-                    type="file"
-                    accept=".pdf,image/*"
-                    multiple
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
-                </label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {items.map(deck => (
+                      <div key={deck.id} className="dc-card p-4 space-y-3">
+                        <div className="flex items-start gap-3">
+                          {/* Thumbnail */}
+                          <div className="w-20 h-14 rounded-lg bg-black/90 overflow-hidden flex-shrink-0 flex items-center justify-center border border-[var(--dc-border)]">
+                            {deck.thumbnail ? (
+                              <img src={deck.thumbnail} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <FileText className="w-5 h-5 text-slate-500" />
+                            )}
+                          </div>
 
-                {isUploading && (
-                  <div className="text-xs text-blue-600 font-mono font-medium animate-pulse text-center">
-                    {uploadProgress}
-                  </div>
-                )}
-              </div>
-
-              {/* "My Files" Section Organized Date-wise */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xl font-extrabold text-[#1C1C1E] flex items-center space-x-2">
-                    <FileText className="w-5 h-5 text-blue-600" />
-                    <span>My Files Library</span>
-                  </h3>
-                  <div className="flex items-center space-x-3">
-                    <span className="text-xs font-mono text-slate-500">{userDecks.length} Files Syncing</span>
-                    <button
-                      onClick={handleManualSync}
-                      className="p-1 rounded-full text-slate-400 hover:text-blue-600 hover:bg-white"
-                      title="Sync Files Across Devices"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {userDecks.length === 0 ? (
-                  <div className="glass-card-light p-8 text-center text-slate-500 space-y-3 border border-slate-200">
-                    <FileText className="w-8 h-8 text-slate-400 mx-auto" />
-                    <p className="text-sm font-medium">No presentation files synced on this device yet.</p>
-                    <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                      Upload a PDF above or tap <strong>Sync</strong> to fetch files uploaded on your PC.
-                    </p>
-                    <button
-                      onClick={handleManualSync}
-                      className="glass-button-primary px-4 py-2 text-xs font-bold inline-flex items-center space-x-1.5"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span>Sync Workspace Files Now</span>
-                    </button>
-                  </div>
-                ) : (
-                  Object.entries(groupedDecks).map(([groupName, decks]) => (
-                    decks.length > 0 && (
-                      <div key={groupName} className="space-y-3">
-                        <div className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center space-x-1.5 pl-1">
-                          <Calendar className="w-3.5 h-3.5 text-blue-600" />
-                          <span>{groupName}</span>
+                          <div className="flex-1 min-w-0">
+                            <h3 className="text-sm font-semibold truncate">{deck.title}</h3>
+                            <p className="text-xs text-[var(--dc-text-secondary)] mt-0.5">{deck.slideCount} slides</p>
+                            <p className="text-[10px] text-[var(--dc-text-secondary)] mt-1 font-mono">
+                              {new Date(deck.uploadDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {decks.map(deck => {
-                            const isSelected = activeDeck && activeDeck.id === deck.id;
-                            const firstSlideImg = deck.slides && deck.slides[0] ? deck.slides[0].image : null;
+                        <div className="flex items-center gap-2 pt-2 border-t border-[var(--dc-border)]">
+                          <button
+                            onClick={() => handleCreateSession(deck.id)}
+                            className="dc-btn dc-btn-primary flex-1 text-xs py-2"
+                          >
+                            <Play className="w-3.5 h-3.5" />
+                            Present
+                          </button>
 
-                            return (
-                              <div
-                                key={deck.id}
-                                onClick={() => {
-                                  setActiveDeck(deck);
-                                  if (socket) {
-                                    const roomParam = username.toUpperCase() + '-ROOM';
-                                    socket.emit('upload-deck', { roomId: roomParam, deck });
-                                  }
-                                }}
-                                className={`glass-card-light p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-3 ${isSelected ? 'border-blue-500 bg-white ring-2 ring-blue-500/20 shadow-md' : 'border-slate-200 hover:border-slate-300'}`}
-                              >
-                                <div className="flex items-start space-x-3">
-                                  {/* Slide Thumbnail */}
-                                  <div className="w-20 h-14 rounded-xl bg-slate-900 overflow-hidden border border-slate-200 flex-shrink-0 flex items-center justify-center">
-                                    {firstSlideImg ? (
-                                      <img src={firstSlideImg} alt="Preview" className="w-full h-full object-cover" />
-                                    ) : (
-                                      <FileText className="w-6 h-6 text-slate-400" />
-                                    )}
-                                  </div>
+                          <button
+                            onClick={() => setPreviewDeck(deck)}
+                            className="dc-btn dc-btn-secondary text-xs py-2"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
 
-                                  <div className="flex-1 min-w-0">
-                                    <h4 className="text-sm font-bold text-[#1C1C1E] truncate">{deck.title}</h4>
-                                    <p className="text-xs text-slate-500 mt-0.5">{deck.slides ? deck.slides.length : 1} Slides</p>
-                                    <p className="text-[10px] text-slate-400 font-mono mt-1">
-                                      Uploaded {new Date(deck.uploadDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                    </p>
-                                  </div>
-                                </div>
+                          <button
+                            onClick={() => handleOpenNotes(deck)}
+                            className="dc-btn dc-btn-secondary text-xs py-2"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
 
-                                {/* Action Buttons */}
-                                <div className="flex items-center space-x-2 pt-2 border-t border-slate-100">
-                                  <Link
-                                    href={`/present?room=${activeRoom}&user=${username}&deck=${deck.id}`}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="flex-1 glass-button-primary py-1.5 text-xs font-bold flex items-center justify-center space-x-1"
-                                  >
-                                    <Play className="w-3.5 h-3.5 fill-current" />
-                                    <span>Present</span>
-                                  </Link>
-
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setPreviewDeck(deck); }}
-                                    className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 flex items-center space-x-1"
-                                    title="View Slides"
-                                  >
-                                    <Eye className="w-3.5 h-3.5 text-slate-600" />
-                                    <span>View</span>
-                                  </button>
-
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setEditingDeck(deck); }}
-                                    className="px-2.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-xs font-medium text-blue-700 flex items-center space-x-1"
-                                    title="Edit Notes"
-                                  >
-                                    <Edit3 className="w-3.5 h-3.5 text-blue-600" />
-                                    <span>Notes</span>
-                                  </button>
-
-                                  <button
-                                    onClick={(e) => handleDeleteDeck(deck.id, e)}
-                                    className="p-1.5 rounded-xl hover:bg-rose-50 text-slate-400 hover:text-rose-600"
-                                    title="Delete"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
+                          <button
+                            onClick={() => handleDeleteDeck(deck.id)}
+                            className="dc-btn dc-btn-ghost text-xs py-2 text-red-500 hover:text-red-600"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
-                    )
-                  ))
-                )}
-              </div>
-            </div>
-
-            {/* Right Section: Selected Deck QR Code & Live Link Launch */}
-            <div className="lg:col-span-4 flex flex-col items-center">
-              <div className="w-full max-w-sm glass-panel-light p-6 rounded-3xl text-center space-y-5 shadow-xl border border-white">
-                <div className="w-12 h-12 mx-auto rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-md shadow-blue-500/30">
-                  <Smartphone className="w-6 h-6" />
-                </div>
-
-                <div>
-                  <h3 className="text-xl font-extrabold text-[#1C1C1E]">Scan QR for Mobile Control</h3>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Room Code: <strong className="text-blue-600 font-mono">{activeRoom}</strong>
-                  </p>
-                </div>
-
-                <div className="p-4 bg-white rounded-2xl mx-auto w-fit shadow-md border border-slate-200">
-                  {remoteUrl && (
-                    <QRCodeSVG
-                      value={remoteUrl}
-                      size={170}
-                      level="H"
-                    />
-                  )}
-                </div>
-
-                {activeDeck && (
-                  <div className="bg-blue-50/80 p-3 rounded-2xl border border-blue-200/60 text-left space-y-1">
-                    <span className="text-[10px] font-mono uppercase text-blue-600 font-bold">Selected Presentation</span>
-                    <div className="text-xs font-bold text-[#1C1C1E] truncate">{activeDeck.title}</div>
-                    <div className="text-[11px] text-slate-500">{activeDeck.slides ? activeDeck.slides.length : 1} Slides ready for projection</div>
+                    ))}
                   </div>
-                )}
-
-                <div className="space-y-2">
-                  {activeDeck && (
-                    <Link
-                      href={`/present?room=${activeRoom}&user=${username}&deck=${activeDeck.id}`}
-                      className="w-full glass-button-primary p-3.5 text-center font-bold text-white flex items-center justify-center space-x-2 text-sm shadow-md shadow-blue-500/25"
-                    >
-                      <Tv className="w-4 h-4" />
-                      <span>Launch Host Presentation</span>
-                    </Link>
-                  )}
-
-                  <Link
-                    href={`/remote?room=${activeRoom}&user=${username}${activeDeck ? `&deck=${activeDeck.id}` : ''}`}
-                    className="w-full glass-button-light p-3 text-center font-bold text-[#1C1C1E] flex items-center justify-center space-x-2 text-xs"
-                  >
-                    <Smartphone className="w-4 h-4 text-blue-600" />
-                    <span>Open Mobile Controller</span>
-                  </Link>
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
+              )
+            )
+          )}
+        </section>
       </main>
 
-      {/* Slide Notes Editor Modal */}
+      {/* ── QR Code Modal ── */}
       <AnimatePresence>
-        {editingDeck && (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+        {qrSession && (
+          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setQrSession(null)}>
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-4xl max-h-[85vh] glass-panel-light bg-white p-6 rounded-3xl shadow-2xl flex flex-col justify-between overflow-hidden"
+              className="dc-panel p-8 max-w-sm w-full text-center space-y-5"
+              onClick={e => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between pb-4 border-b border-slate-200">
-                <div>
-                  <h3 className="text-lg font-extrabold text-[#1C1C1E]">
-                    Edit Speaker Notes - {editingDeck.title}
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Notes entered here display on your mobile controller during presentation
-                  </p>
+              <div className="space-y-1">
+                <div className="text-2xl font-mono font-bold tracking-widest text-[var(--dc-blue)]">
+                  {qrSession.sessionId}
                 </div>
-                <button
-                  onClick={() => setEditingDeck(null)}
-                  className="p-2 rounded-full hover:bg-slate-100 text-slate-500"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Per-Slide Notes Editor List */}
-              <div className="flex-1 overflow-y-auto py-4 space-y-4 max-h-[60vh]">
-                {editingDeck.slides && editingDeck.slides.map((slideItem, idx) => (
-                  <div key={idx} className="glass-card-light p-4 rounded-2xl border border-slate-200 flex flex-col sm:flex-row gap-4 items-start">
-                    <div className="w-36 aspect-[16/10] bg-slate-900 rounded-xl overflow-hidden flex-shrink-0 border border-slate-300">
-                      {slideItem.image ? (
-                        <img src={slideItem.image} alt={`Slide ${idx + 1}`} className="w-full h-full object-contain" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-white text-xs font-bold">
-                          Slide {idx + 1}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="flex-1 w-full space-y-2">
-                      <div className="flex justify-between items-center text-xs text-slate-500 font-bold">
-                        <span>Slide {idx + 1} Speaker Notes:</span>
-                      </div>
-                      <textarea
-                        rows={3}
-                        defaultValue={slideItem.notes || ''}
-                        onBlur={(e) => handleSaveNote(editingDeck.id, idx, e.target.value)}
-                        placeholder="Add confidential presenter notes for this slide..."
-                        className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-xs text-[#1C1C1E] focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="pt-4 border-t border-slate-200 flex justify-end">
-                <button
-                  onClick={() => setEditingDeck(null)}
-                  className="glass-button-primary px-6 py-2 text-xs font-bold flex items-center space-x-2"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Done Editing Notes</span>
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Slide Preview Grid Modal */}
-      <AnimatePresence>
-        {previewDeck && (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-5xl max-h-[85vh] glass-panel-light bg-white p-6 rounded-3xl shadow-2xl flex flex-col justify-between overflow-hidden"
-            >
-              <div className="flex items-center justify-between pb-4 border-b border-slate-200">
-                <div>
-                  <h3 className="text-lg font-extrabold text-[#1C1C1E]">{previewDeck.title}</h3>
-                  <p className="text-xs text-slate-500">{previewDeck.slides ? previewDeck.slides.length : 1} Presentation Slides Preview</p>
+                <div className="text-sm font-semibold truncate">{qrSession.deckTitle}</div>
+                <div className="text-xs text-[var(--dc-text-secondary)]">
+                  Scan to control from your phone
                 </div>
-                <button
-                  onClick={() => setPreviewDeck(null)}
-                  className="p-2 rounded-full hover:bg-slate-100 text-slate-500"
-                >
-                  <X className="w-5 h-5" />
-                </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto py-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 max-h-[60vh]">
-                {previewDeck.slides && previewDeck.slides.map((s, idx) => (
-                  <div key={idx} className="glass-card-light p-2 rounded-xl border border-slate-200 space-y-1 text-center">
-                    <div className="aspect-[16/10] bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center">
-                      {s.image ? (
-                        <img src={s.image} alt={`Slide ${idx + 1}`} className="w-full h-full object-contain" />
-                      ) : (
-                        <span className="text-white text-xs font-bold">Slide {idx + 1}</span>
-                      )}
-                    </div>
-                    <span className="text-[11px] font-mono text-slate-500 font-bold">Slide {idx + 1}</span>
-                  </div>
-                ))}
+              <div className="p-5 bg-white rounded-2xl mx-auto w-fit shadow-sm border border-[var(--dc-border)]">
+                <QRCodeSVG
+                  value={`${baseUrl}/control/${qrSession.sessionId}`}
+                  size={180}
+                  level="H"
+                />
               </div>
 
-              <div className="pt-4 border-t border-slate-200 flex justify-between items-center">
+              <div className="space-y-2">
                 <Link
-                  href={`/present?room=${activeRoom}&user=${username}&deck=${previewDeck.id}`}
-                  className="glass-button-primary px-6 py-2 text-xs font-bold flex items-center space-x-2"
+                  href={`/present/${qrSession.sessionId}`}
+                  className="dc-btn dc-btn-primary w-full py-3 text-sm"
                 >
-                  <Play className="w-4 h-4 fill-current" />
-                  <span>Start Presentation Now</span>
+                  <Monitor className="w-4 h-4" />
+                  Open Host Screen
                 </Link>
-                <button
-                  onClick={() => setPreviewDeck(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 text-xs font-semibold text-slate-600 hover:bg-slate-200"
-                >
+
+                <button onClick={() => setQrSession(null)} className="dc-btn dc-btn-secondary w-full text-xs py-2.5">
                   Close
                 </button>
               </div>
@@ -701,8 +541,118 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      <footer className="max-w-7xl mx-auto w-full pt-4 border-t border-slate-200 text-center text-xs text-slate-400">
-        AuraSync Enterprise Presentation System • Minimal Apple iOS Style
+      {/* ── Slide Preview Modal ── */}
+      <AnimatePresence>
+        {previewDeck && (
+          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setPreviewDeck(null)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="dc-panel p-6 max-w-4xl w-full max-h-[85vh] flex flex-col"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between pb-4 border-b border-[var(--dc-border)]">
+                <div>
+                  <h3 className="text-base font-bold">{previewDeck.title}</h3>
+                  <p className="text-xs text-[var(--dc-text-secondary)]">{previewDeck.slideCount} slides</p>
+                </div>
+                <button onClick={() => setPreviewDeck(null)} className="dc-btn dc-btn-ghost p-2">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto py-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                {Array.from({ length: previewDeck.slideCount }).map((_, i) => (
+                  <div key={i} className="dc-card p-1.5 text-center space-y-1">
+                    <div className="aspect-[16/10] bg-black rounded-lg overflow-hidden">
+                      <img
+                        src={`/api/slides/${previewDeck.id}/${i}`}
+                        alt={`Slide ${i + 1}`}
+                        className="w-full h-full object-contain"
+                        loading="lazy"
+                      />
+                    </div>
+                    <span className="text-[10px] font-mono text-[var(--dc-text-secondary)]">{i + 1}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="pt-4 border-t border-[var(--dc-border)] flex justify-between items-center">
+                <button onClick={() => { setPreviewDeck(null); handleCreateSession(previewDeck.id); }} className="dc-btn dc-btn-primary text-xs">
+                  <Play className="w-3.5 h-3.5" />
+                  Present Now
+                </button>
+                <button onClick={() => setPreviewDeck(null)} className="dc-btn dc-btn-secondary text-xs">
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Notes Editor Modal ── */}
+      <AnimatePresence>
+        {editingNotes && (
+          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setEditingNotes(null)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="dc-panel p-6 max-w-3xl w-full max-h-[85vh] flex flex-col"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between pb-4 border-b border-[var(--dc-border)]">
+                <div>
+                  <h3 className="text-base font-bold">Speaker Notes — {editingNotes.deckTitle}</h3>
+                  <p className="text-xs text-[var(--dc-text-secondary)]">Visible only to you on the mobile controller</p>
+                </div>
+                <button onClick={() => setEditingNotes(null)} className="dc-btn dc-btn-ghost p-2">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto py-4 space-y-4">
+                {Array.from({ length: editingNotes.slideCount }).map((_, i) => (
+                  <div key={i} className="dc-card p-4 flex flex-col sm:flex-row gap-4 items-start">
+                    <div className="w-32 aspect-[16/10] bg-black rounded-lg overflow-hidden flex-shrink-0 border border-[var(--dc-border)]">
+                      <img
+                        src={`/api/slides/${editingNotes.deckId}/${i}`}
+                        alt={`Slide ${i + 1}`}
+                        className="w-full h-full object-contain"
+                        loading="lazy"
+                      />
+                    </div>
+                    <div className="flex-1 w-full space-y-1">
+                      <label className="text-xs font-semibold text-[var(--dc-text-secondary)]">
+                        Slide {i + 1}
+                      </label>
+                      <textarea
+                        rows={2}
+                        defaultValue={editingNotes.notes[i] || ''}
+                        onBlur={(e) => handleSaveNote(editingNotes.deckId, i, e.target.value)}
+                        placeholder="Add speaker notes..."
+                        className="dc-input text-xs py-2 resize-none"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="pt-4 border-t border-[var(--dc-border)] flex justify-end">
+                <button onClick={() => setEditingNotes(null)} className="dc-btn dc-btn-primary text-xs">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Done
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <footer className="text-center text-xs text-[var(--dc-text-secondary)] py-4 border-t border-[var(--dc-border)]">
+        DeckCast — Real-Time Presentation Platform
       </footer>
     </div>
   );
