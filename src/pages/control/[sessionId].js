@@ -50,15 +50,17 @@ export default function ControlPage() {
   const [spotlightActive, setSpotlightActive] = useState(false);
   const [blackoutActive, setBlackoutActive] = useState(false);
 
-  // 16:9 Left-to-Right Drag Selection & Delayed (0.5s) Box Shifting State
+  // 16:9 Left-to-Right Drag Selection & 0.5s Delayed Pan State
   const [isDrawing, setIsDrawing] = useState(false);
   const [isDraggingBox, setIsDraggingBox] = useState(false);
   const [isPanReady, setIsPanReady] = useState(false); // Enabled 0.5s after releasing drag
   const [dragAnchor, setDragAnchor] = useState({ startX: 0, startY: 0, initialBoxX: 0, initialBoxY: 0 });
   const [selectionBox, setSelectionBox] = useState(null);
+
   const zoomCanvasRef = useRef(null);
   const panTimeoutRef = useRef(null);
-  const lastEmitTimeRef = useRef(0);
+  const rafRef = useRef(null);
+  const lastEmitRef = useRef(0);
 
   // Laser
   const laserTrackpadRef = useRef(null);
@@ -204,7 +206,7 @@ export default function ControlPage() {
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── LEFT-TO-RIGHT ONLY DRAG SELECTION & 0.5s DELAYED BOX PANNING ──
+  // ── EASY SMALL-BOX MOVEMENT & DRAG SELECTION WITH NO JITTER ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -220,24 +222,19 @@ export default function ControlPage() {
     triggerHaptic();
     const c = getCanvasCoords(e);
 
-    // MODE A: If 0.5s has elapsed AND selectionBox exists AND touch is INSIDE box -> Shift/Pan Mode
+    // EASY SMALL-BOX MOVEMENT: Once 0.5s has elapsed AND a box exists, ANY touch on canvas allows shifting!
     if (isPanReady && selectionBox) {
-      const insideX = c.pctX >= selectionBox.startX && c.pctX <= selectionBox.startX + selectionBox.width;
-      const insideY = c.pctY >= selectionBox.startY && c.pctY <= selectionBox.startY + selectionBox.height;
-
-      if (insideX && insideY) {
-        setIsDraggingBox(true);
-        setDragAnchor({
-          startX: c.pctX,
-          startY: c.pctY,
-          initialBoxX: selectionBox.startX,
-          initialBoxY: selectionBox.startY,
-        });
-        return;
-      }
+      setIsDraggingBox(true);
+      setDragAnchor({
+        startX: c.pctX,
+        startY: c.pctY,
+        initialBoxX: selectionBox.startX,
+        initialBoxY: selectionBox.startY,
+      });
+      return;
     }
 
-    // MODE B: Otherwise -> Draw new shape (Clear previous pan state)
+    // Otherwise: Start drawing a new box
     if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
     setIsPanReady(false);
     setIsDrawing(true);
@@ -245,71 +242,66 @@ export default function ControlPage() {
   };
 
   const onZoomMove = (e) => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+
     const c = getCanvasCoords(e);
 
-    // MODE A: Shift / Pan existing box
-    if (isDraggingBox && selectionBox) {
-      const deltaX = c.pctX - dragAnchor.startX;
-      const deltaY = c.pctY - dragAnchor.startY;
+    rafRef.current = requestAnimationFrame(() => {
+      // MODE A: Smooth Pan/Shift existing zoomed box in ANY direction
+      if (isDraggingBox && selectionBox) {
+        const deltaX = c.pctX - dragAnchor.startX;
+        const deltaY = c.pctY - dragAnchor.startY;
 
-      const newStartX = Math.min(100 - selectionBox.width, Math.max(0, dragAnchor.initialBoxX + deltaX));
-      const newStartY = Math.min(100 - selectionBox.height, Math.max(0, dragAnchor.initialBoxY + deltaY));
+        const newStartX = Math.min(100 - selectionBox.width, Math.max(0, dragAnchor.initialBoxX + deltaX));
+        const newStartY = Math.min(100 - selectionBox.height, Math.max(0, dragAnchor.initialBoxY + deltaY));
 
-      const updatedBox = { ...selectionBox, startX: newStartX, startY: newStartY };
-      setSelectionBox(updatedBox);
+        const updatedBox = { ...selectionBox, startX: newStartX, startY: newStartY };
+        setSelectionBox(updatedBox);
 
-      // Throttled socket broadcast to eliminate lag and overlapping (max 25fps)
-      const now = Date.now();
-      if (socket && now - lastEmitTimeRef.current > 40) {
-        lastEmitTimeRef.current = now;
-        socket.emit('zoom-area', {
-          x: newStartX,
-          y: newStartY,
-          width: selectionBox.width,
-          height: selectionBox.height,
-        });
-      }
-      return;
-    }
-
-    // MODE B: Draw new shape ONLY WHEN DRAGGING LEFT TO RIGHT (c.pctX > dragAnchor.startX)
-    if (isDrawing) {
-      // Ignore right-to-left drags
-      if (c.pctX <= dragAnchor.startX) {
+        // Throttle Socket Emits at 30fps to avoid jitter/lag
+        const now = Date.now();
+        if (socket && now - lastEmitRef.current > 33) {
+          lastEmitRef.current = now;
+          socket.emit('zoom-area', {
+            x: newStartX,
+            y: newStartY,
+            width: selectionBox.width,
+            height: selectionBox.height,
+          });
+        }
         return;
       }
 
-      // Dragging Left to Right
-      const width = Math.max(10, c.pctX - dragAnchor.startX);
-      const height = width / (16 / 9); // Strict 16:9 Ratio
+      // MODE B: Draw new shape ONLY WHEN DRAGGING LEFT TO RIGHT (c.pctX > dragAnchor.startX)
+      if (isDrawing) {
+        if (c.pctX <= dragAnchor.startX) return;
 
-      const startX = dragAnchor.startX;
-      const startY = Math.min(100 - height, Math.max(0, dragAnchor.startY));
+        const width = Math.max(8, c.pctX - dragAnchor.startX);
+        const height = width / (16 / 9); // Strict 16:9 Ratio
 
-      const updatedBox = {
-        startX,
-        startY,
-        width,
-        height,
-      };
+        const startX = dragAnchor.startX;
+        const startY = Math.min(100 - height, Math.max(0, dragAnchor.startY));
 
-      setSelectionBox(updatedBox);
+        const updatedBox = { startX, startY, width, height };
+        setSelectionBox(updatedBox);
 
-      // Throttled socket broadcast
-      const now = Date.now();
-      if (socket && now - lastEmitTimeRef.current > 40) {
-        lastEmitTimeRef.current = now;
-        socket.emit('zoom-area', {
-          x: updatedBox.startX,
-          y: updatedBox.startY,
-          width: updatedBox.width,
-          height: updatedBox.height,
-        });
+        const now = Date.now();
+        if (socket && now - lastEmitRef.current > 33) {
+          lastEmitRef.current = now;
+          socket.emit('zoom-area', {
+            x: updatedBox.startX,
+            y: updatedBox.startY,
+            width: updatedBox.width,
+            height: updatedBox.height,
+          });
+        }
       }
-    }
+    });
   };
 
   const onZoomEnd = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+
     if (isDrawing || isDraggingBox) {
       setIsDrawing(false);
       setIsDraggingBox(false);
@@ -317,7 +309,6 @@ export default function ControlPage() {
 
       if (selectionBox) {
         setIsZoomed(true);
-        // Final exact socket broadcast
         if (socket) {
           socket.emit('zoom-area', {
             x: selectionBox.startX,
@@ -391,43 +382,44 @@ export default function ControlPage() {
     );
   }
 
-  // ── TAB CONTENT ──
+  // ── TAB CONTENT WITH LANDSCAPE ROTATION RESPONSIVENESS ──
   const renderTab = () => {
     switch (activeTab) {
       case 'nav':
         return (
           <motion.div key="nav" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col justify-between gap-3 py-2">
+            className="flex-1 flex flex-col landscape:flex-row justify-between gap-3 py-2 landscape:py-1 items-stretch">
             {/* Slide info */}
-            <div className="dc-card p-3 text-center space-y-0.5">
+            <div className="dc-card p-3 landscape:p-2 text-center space-y-0.5 landscape:w-1/3 flex flex-col justify-center">
               <div className="text-xs font-mono text-[var(--dc-text-secondary)]">
-                {currentSlide + 1} / {totalSlides} — <span className="text-[var(--dc-blue)] font-semibold truncate">{deckTitle}</span>
+                {currentSlide + 1} / {totalSlides}
               </div>
+              <div className="text-xs font-bold text-[var(--dc-blue)] truncate">{deckTitle}</div>
               {isZoomed && (
-                <div className="dc-badge dc-badge-live text-[10px] mx-auto">Zoom Active</div>
+                <div className="dc-badge dc-badge-live text-[9px] mx-auto mt-1">Zoom Active</div>
               )}
             </div>
 
             {/* Prev / Next */}
-            <div className="grid grid-cols-2 gap-3 flex-1 max-h-[50vh]">
+            <div className="grid grid-cols-2 gap-3 flex-1 max-h-[50vh] landscape:max-h-full">
               <button onClick={handlePrev} disabled={currentSlide === 0}
                 className={`dc-card flex flex-col items-center justify-center gap-1 active:scale-95 transition-transform ${currentSlide === 0 ? 'opacity-30' : ''}`}>
-                <ChevronLeft className="w-10 h-10 text-[var(--dc-blue)]" />
-                <span className="text-xs font-bold uppercase tracking-wider">Prev</span>
+                <ChevronLeft className="w-9 h-9 text-[var(--dc-blue)]" />
+                <span className="text-[11px] font-bold uppercase tracking-wider">Prev</span>
               </button>
               <button onClick={handleNext} disabled={currentSlide >= totalSlides - 1}
                 className={`flex flex-col items-center justify-center gap-1 active:scale-95 transition-transform rounded-[14px] ${currentSlide >= totalSlides - 1 ? 'opacity-30 bg-blue-500/40' : 'bg-[var(--dc-blue)]'} text-white shadow-lg shadow-blue-500/20`}>
-                <ChevronRight className="w-10 h-10" />
-                <span className="text-xs font-bold uppercase tracking-wider">Next</span>
+                <ChevronRight className="w-9 h-9" />
+                <span className="text-[11px] font-bold uppercase tracking-wider">Next</span>
               </button>
             </div>
 
             {/* Quick Actions */}
-            <div className="grid grid-cols-2 gap-2">
-              <button onClick={handleReset} className="dc-btn dc-btn-secondary text-xs py-2.5 w-full">
+            <div className="grid grid-cols-2 landscape:flex landscape:flex-col gap-2">
+              <button onClick={handleReset} className="dc-btn dc-btn-secondary text-xs py-2.5 landscape:py-1.5 w-full">
                 <RotateCcw className="w-3.5 h-3.5" /> Reset
               </button>
-              <button onClick={triggerConfetti} className="dc-btn dc-btn-secondary text-xs py-2.5 w-full">
+              <button onClick={triggerConfetti} className="dc-btn dc-btn-secondary text-xs py-2.5 landscape:py-1.5 w-full">
                 <Sparkles className="w-3.5 h-3.5 text-purple-500" /> Confetti
               </button>
             </div>
@@ -437,23 +429,23 @@ export default function ControlPage() {
       case 'zoom':
         return (
           <motion.div key="zoom" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col justify-between gap-3 py-2">
-            <div className="text-center">
-              <h3 className="text-sm font-bold flex items-center justify-center gap-1.5">
-                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> Left-to-Right Drag Zoom
+            className="flex-1 flex flex-col justify-between gap-2 py-2 landscape:py-1">
+            <div className="text-center flex-shrink-0">
+              <h3 className="text-xs font-bold flex items-center justify-center gap-1.5">
+                <ZoomIn className="w-3.5 h-3.5 text-[var(--dc-blue)]" /> Left-to-Right Drag & Shift Zoom
               </h3>
-              <p className="text-[11px] text-[var(--dc-text-secondary)]">
-                Drag Left-to-Right (→) to select • Move mode enables 0.5s after release
+              <p className="text-[10px] text-[var(--dc-text-secondary)]">
+                Drag (→) to select • Touch ANYWHERE on canvas after 0.5s to shift live!
               </p>
             </div>
 
             <div ref={zoomCanvasRef}
               onTouchStart={onZoomStart} onTouchMove={onZoomMove} onTouchEnd={onZoomEnd}
               onMouseDown={onZoomStart} onMouseMove={onZoomMove} onMouseUp={onZoomEnd}
-              className="relative w-full aspect-[16/9] bg-black rounded-2xl border border-[var(--dc-border)] shadow-lg overflow-hidden select-none flex items-center justify-center my-auto touch-none cursor-crosshair">
+              className="relative w-full aspect-[16/9] max-h-[60vh] bg-black rounded-2xl border border-[var(--dc-border)] shadow-lg overflow-hidden select-none flex items-center justify-center my-auto touch-none cursor-crosshair">
               {slideImgSrc && <img src={slideImgSrc} alt="Current slide" className="w-full h-full object-contain pointer-events-none" />}
 
-              {/* Active Selection Box with Delayed Move Indicator */}
+              {/* Active Selection Box with Pan Handle */}
               {selectionBox && (
                 <div className="absolute border-2 border-[var(--dc-blue)] bg-blue-500/20 rounded-lg dc-zoom-selection cursor-move"
                   style={{
@@ -469,20 +461,17 @@ export default function ControlPage() {
                         initial={{ scale: 0, opacity: 0 }}
                         animate={{ scale: 1, opacity: 1 }}
                         exit={{ scale: 0, opacity: 0 }}
-                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--dc-blue)] text-white p-1.5 rounded-full shadow-lg"
+                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--dc-blue)] text-white p-1 rounded-full shadow-lg"
                       >
-                        <Move className="w-3.5 h-3.5 animate-pulse" />
+                        <Move className="w-3 h-3 animate-pulse" />
                       </motion.div>
                     )}
                   </AnimatePresence>
-                  <span className="absolute -top-3.5 left-0 text-[8px] bg-[var(--dc-blue)] text-white px-1 rounded font-mono font-bold flex items-center gap-0.5">
-                    16:9 Target {isPanReady ? '(Move Ready)' : ''}
-                  </span>
                 </div>
               )}
             </div>
 
-            <button onClick={handleReset} className="dc-btn dc-btn-danger w-full text-xs py-2.5">
+            <button onClick={handleReset} className="dc-btn dc-btn-danger w-full text-xs py-2 landscape:py-1 flex-shrink-0">
               <RotateCcw className="w-3.5 h-3.5" /> Reset Zoom
             </button>
           </motion.div>
@@ -491,13 +480,13 @@ export default function ControlPage() {
       case 'effects':
         return (
           <motion.div key="effects" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col justify-between gap-3 py-2">
-            <h3 className="text-sm font-bold text-center flex items-center justify-center gap-1.5">
-              <Sliders className="w-4 h-4 text-purple-500" /> Visual Effects
+            className="flex-1 flex flex-col justify-between gap-3 py-2 landscape:py-1">
+            <h3 className="text-xs font-bold text-center flex items-center justify-center gap-1.5">
+              <Sliders className="w-3.5 h-3.5 text-purple-500" /> Visual Effects
             </h3>
 
-            <div className="dc-card p-4 space-y-4">
-              <div className="space-y-1.5">
+            <div className="dc-card p-3 space-y-3">
+              <div className="space-y-1">
                 <div className="flex justify-between text-xs">
                   <span>Blur</span>
                   <span className="font-mono text-purple-600">{filters.blur}px</span>
@@ -543,7 +532,7 @@ export default function ControlPage() {
               </div>
             </div>
 
-            <button onClick={handleReset} className="dc-btn dc-btn-secondary w-full text-xs py-2.5">
+            <button onClick={handleReset} className="dc-btn dc-btn-secondary w-full text-xs py-2 landscape:py-1">
               <RotateCcw className="w-3.5 h-3.5" /> Reset Effects
             </button>
           </motion.div>
@@ -552,15 +541,15 @@ export default function ControlPage() {
       case 'laser':
         return (
           <motion.div key="laser" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col justify-between gap-3 py-2">
-            <h3 className="text-sm font-bold text-center flex items-center justify-center gap-1.5">
-              <MousePointer className="w-4 h-4 text-red-500" /> Laser Pointer
+            className="flex-1 flex flex-col justify-between gap-3 py-2 landscape:py-1">
+            <h3 className="text-xs font-bold text-center flex items-center justify-center gap-1.5">
+              <MousePointer className="w-3.5 h-3.5 text-red-500" /> Laser Pointer
             </h3>
 
             <div ref={laserTrackpadRef}
               onTouchMove={onLaserMove} onTouchEnd={onLaserEnd}
               onMouseMove={onLaserMove} onMouseLeave={onLaserEnd}
-              className="w-full aspect-[16/9] dc-card bg-slate-50 border-2 border-red-500/20 rounded-2xl flex flex-col items-center justify-center relative overflow-hidden shadow-inner my-auto touch-none">
+              className="w-full aspect-[16/9] max-h-[60vh] dc-card bg-slate-50 border-2 border-red-500/20 rounded-2xl flex flex-col items-center justify-center relative overflow-hidden shadow-inner my-auto touch-none">
               <div className="w-8 h-8 rounded-full bg-red-500/15 border border-red-500/40 flex items-center justify-center animate-ping" />
               <span className="text-[11px] font-mono text-red-500 mt-2 tracking-wider uppercase font-semibold">
                 Drag to aim
@@ -572,16 +561,16 @@ export default function ControlPage() {
       case 'notes':
         return (
           <motion.div key="notes" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col justify-between gap-3 py-2">
-            <h3 className="text-sm font-bold text-center flex items-center justify-center gap-1.5">
-              <FileText className="w-4 h-4 text-green-600" /> Speaker Notes
+            className="flex-1 flex flex-col justify-between gap-3 py-2 landscape:py-1">
+            <h3 className="text-xs font-bold text-center flex items-center justify-center gap-1.5">
+              <FileText className="w-3.5 h-3.5 text-green-600" /> Speaker Notes
             </h3>
 
-            <div className="dc-card p-4 flex-1 overflow-y-auto max-h-[50vh] space-y-2">
+            <div className="dc-card p-3 flex-1 overflow-y-auto max-h-[50vh] space-y-1">
               <div className="text-[10px] font-mono font-bold text-green-600 uppercase tracking-wider">
                 Slide {currentSlide + 1}
               </div>
-              <p className="text-sm text-[var(--dc-text)] leading-relaxed">
+              <p className="text-xs text-[var(--dc-text)] leading-relaxed">
                 {currentNote || 'No speaker notes for this slide.'}
               </p>
             </div>
@@ -604,7 +593,7 @@ export default function ControlPage() {
   return (
     <div className="fixed inset-0 w-full h-[100dvh] bg-[var(--dc-bg)] text-[var(--dc-text)] flex flex-col overflow-hidden select-none">
       {/* Header */}
-      <div className="dc-panel rounded-none px-4 py-2 flex items-center justify-between z-30 flex-shrink-0 border-b border-[var(--dc-border)]">
+      <div className="dc-panel rounded-none px-4 py-2 landscape:py-1 flex items-center justify-between z-30 flex-shrink-0 border-b border-[var(--dc-border)]">
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
           <span className="text-xs font-mono font-bold tracking-wider text-[var(--dc-blue)]">
@@ -632,13 +621,13 @@ export default function ControlPage() {
         </AnimatePresence>
       </div>
 
-      {/* Bottom Dock */}
-      <div className="px-3 pb-4 pt-2 z-30 flex-shrink-0 dc-safe-bottom">
-        <div className="dc-dock max-w-md mx-auto px-2 py-1.5 flex justify-around items-center">
+      {/* Bottom Dock (Landscape & Portrait Responsive) */}
+      <div className="px-3 pb-3 pt-1 landscape:pb-1 z-30 flex-shrink-0 dc-safe-bottom">
+        <div className="dc-dock max-w-md mx-auto px-2 py-1 flex justify-around items-center">
           {tabs.map(tab => (
             <button key={tab.id}
               onClick={() => { triggerHaptic(); setActiveTab(tab.id); }}
-              className={`p-2 rounded-2xl flex flex-col items-center text-[9px] gap-0.5 transition-all active:scale-95 min-w-[48px]
+              className={`p-2 landscape:p-1 rounded-2xl flex flex-col items-center text-[9px] gap-0.5 transition-all active:scale-95 min-w-[48px]
                 ${activeTab === tab.id
                   ? 'bg-[var(--dc-blue)]/10 text-[var(--dc-blue)] font-bold'
                   : 'text-[var(--dc-text-secondary)]'}`}>

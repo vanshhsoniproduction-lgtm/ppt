@@ -57,16 +57,11 @@ export default function HostScreen() {
   useEffect(() => {
     if (!deckId || !totalSlides) return;
 
-    // Immediately populate default API routes so slides display with 0 delay
     const initialUrls = Array.from({ length: totalSlides }, (_, i) => `/api/slides/${deckId}/${i}`);
     setCachedSlides(initialUrls);
 
-    // Preload all slides in parallel in background
-    initialUrls.forEach((url, i) => {
+    initialUrls.forEach((url) => {
       const img = new Image();
-      img.onload = () => {
-        // Cached in browser memory
-      };
       img.src = url;
     });
   }, [deckId, totalSlides]);
@@ -193,7 +188,7 @@ export default function HostScreen() {
     setSessionActive(false);
   };
 
-  // MATHEMATICALLY EXACT 100% UN-CROPPED 16:9 ZOOM TRANSFORM
+  // MATHEMATICALLY EXACT 100% UN-CROPPED 16:9 ZOOM TRANSFORM WITH HARDWARE ACCELERATED GPU COMPOSITING
   const calcZoom = () => {
     if (!isZoomed || !zoomCoords) {
       return { scale: 1, x: 0, y: 0 };
@@ -208,7 +203,6 @@ export default function HostScreen() {
     const cx = pxX + pxW / 2;
     const cy = pxY + pxH / 2;
 
-    // Calculate scale factor to make selection fill viewport width/height
     const scaleX = 100 / pxW;
     const scaleY = 100 / pxH;
     const scale = Math.min(8, Math.max(1.1, Math.min(scaleX, scaleY)));
@@ -235,24 +229,21 @@ export default function HostScreen() {
   const slideVariants = {
     enter: (dir) => ({
       x: dir > 0 ? '100%' : '-100%',
-      rotateY: dir > 0 ? 30 : -30,
-      scale: 0.88,
+      rotateY: dir > 0 ? 25 : -25,
+      scale: 0.9,
       opacity: 0,
-      filter: 'blur(8px)',
     }),
     center: {
       x: '0%',
       rotateY: 0,
       scale: 1,
       opacity: 1,
-      filter: 'blur(0px)',
     },
     exit: (dir) => ({
       x: dir < 0 ? '100%' : '-100%',
-      rotateY: dir < 0 ? 30 : -30,
-      scale: 0.88,
+      rotateY: dir < 0 ? 25 : -25,
+      scale: 0.9,
       opacity: 0,
-      filter: 'blur(8px)',
     }),
   };
 
@@ -307,20 +298,15 @@ export default function HostScreen() {
         )}
       </AnimatePresence>
 
-      {/* Main 16:9 Presentation Canvas with Exact Math Zoom */}
+      {/* Main 16:9 Presentation Canvas with GPU Hardware-Accelerated Smooth Translation (No Jitter) */}
       <div className="w-full h-full relative flex items-center justify-center overflow-hidden">
-        <motion.div
-          className="w-full h-full relative flex items-center justify-center"
-          animate={{
-            scale: zoom.scale,
-            x: `${zoom.x}%`,
-            y: `${zoom.y}%`,
-          }}
-          transition={{ type: 'spring', stiffness: 200, damping: 26 }}
+        <div
+          className="w-full h-full relative flex items-center justify-center transition-transform duration-150 ease-out"
           style={{
-            filter: cssFilter,
-            transformStyle: 'preserve-3d',
+            transform: `translate3d(${zoom.x}%, ${zoom.y}%, 0) scale(${zoom.scale})`,
             transformOrigin: '50% 50%',
+            filter: cssFilter,
+            willChange: 'transform',
           }}
         >
           <AnimatePresence mode="wait" custom={slideDirection}>
@@ -333,12 +319,11 @@ export default function HostScreen() {
               exit="exit"
               transition={{
                 type: 'spring',
-                stiffness: 220,
-                damping: 24,
-                mass: 0.8,
+                stiffness: 240,
+                damping: 26,
               }}
               className="w-full h-full flex items-center justify-center absolute inset-0"
-              style={{ transformStyle: 'preserve-3d' }}
+              style={{ transformStyle: 'preserve-3d', willChange: 'transform, opacity' }}
             >
               <img
                 src={currentSlideSrc}
@@ -348,7 +333,7 @@ export default function HostScreen() {
               />
             </motion.div>
           </AnimatePresence>
-        </motion.div>
+        </div>
       </div>
 
       {/* Spotlight Overlay */}
@@ -366,7 +351,7 @@ export default function HostScreen() {
         <motion.div
           className="absolute w-6 h-6 rounded-full pointer-events-none z-40 -ml-3 -mt-3 flex items-center justify-center"
           animate={{ left: `${laser.x}%`, top: `${laser.y}%` }}
-          transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+          transition={{ type: 'spring', stiffness: 450, damping: 30 }}
         >
           <div className="w-4 h-4 bg-red-500 rounded-full shadow-[0_0_20px_#ef4444] animate-ping opacity-80" />
           <div className="absolute w-3 h-3 bg-red-500 rounded-full border border-white shadow-lg" />
