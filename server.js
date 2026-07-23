@@ -19,9 +19,9 @@ function getOrCreateRoom(roomId) {
     rooms.set(roomId, {
       roomId,
       currentSlide: 0,
-      totalSlides: 6,
-      deckId: 'futuristic-tech',
-      customDeck: null, // Holds uploaded PDF / PPT deck data
+      totalSlides: 1,
+      deckId: null,
+      customDeck: null,
       isZoomed: false,
       zoomCoords: { x: 0, y: 0, width: 100, height: 100 },
       transitionType: 'slide',
@@ -54,14 +54,13 @@ function getOrCreateRoom(roomId) {
 app.prepare().then(() => {
   const expressApp = express();
 
-  // Increase payload limit for large PDF slide data URLs
-  expressApp.use(express.json({ limit: '100mb' }));
-  expressApp.use(express.urlencoded({ limit: '100mb', extended: true }));
+  expressApp.use(express.json({ limit: '150mb' }));
+  expressApp.use(express.urlencoded({ limit: '150mb', extended: true }));
 
   const server = createServer(expressApp);
 
   const io = new Server(server, {
-    maxHttpBufferSize: 1e8, // 100 MB buffer for PDF slide images
+    maxHttpBufferSize: 1e8, // 100 MB payload limit for high-res PDF presentation slides
     cors: {
       origin: '*',
       methods: ['GET', 'POST']
@@ -70,7 +69,7 @@ app.prepare().then(() => {
 
   io.on('connection', (socket) => {
     let currentRoomId = null;
-    let clientRole = 'remote'; // 'host' or 'remote'
+    let clientRole = 'remote';
 
     socket.on('join-room', ({ roomId, role }) => {
       const cleanRoomId = (roomId || 'default').toUpperCase().trim();
@@ -81,10 +80,10 @@ app.prepare().then(() => {
       const room = getOrCreateRoom(cleanRoomId);
       room.connectedClients++;
 
-      // Send initial state to the newly joined client
+      // Send initial room state to client
       socket.emit('room-state', room);
 
-      // Notify other clients in the room
+      // Notify clients
       io.to(cleanRoomId).emit('client-joined', {
         role: clientRole,
         connectedClients: room.connectedClients
@@ -107,7 +106,7 @@ app.prepare().then(() => {
         currentSlide: 0,
         totalSlides: room.totalSlides
       });
-      console.log(`[Socket] Custom deck uploaded to room ${currentRoomId}: ${deck.title}`);
+      console.log(`[Socket] Deck "${deck.title}" uploaded to room: ${currentRoomId}`);
     });
 
     socket.on('slide-change', ({ slideIndex, totalSlides }) => {
@@ -131,7 +130,7 @@ app.prepare().then(() => {
       if (!currentRoomId) return;
       const room = getOrCreateRoom(currentRoomId);
       room.isZoomed = true;
-      room.zoomCoords = coords; // { x, y, width, height }
+      room.zoomCoords = coords;
 
       io.to(currentRoomId).emit('zoom-updated', {
         isZoomed: true,
@@ -210,30 +209,6 @@ app.prepare().then(() => {
       });
     });
 
-    socket.on('set-transition', ({ transitionType }) => {
-      if (!currentRoomId) return;
-      const room = getOrCreateRoom(currentRoomId);
-      room.transitionType = transitionType;
-
-      io.to(currentRoomId).emit('transition-updated', {
-        transitionType
-      });
-    });
-
-    socket.on('select-deck', ({ deckId }) => {
-      if (!currentRoomId) return;
-      const room = getOrCreateRoom(currentRoomId);
-      room.deckId = deckId;
-      room.customDeck = null;
-      room.currentSlide = 0;
-      room.isZoomed = false;
-
-      io.to(currentRoomId).emit('deck-updated', {
-        deckId,
-        currentSlide: 0
-      });
-    });
-
     socket.on('trigger-confetti', () => {
       if (!currentRoomId) return;
       io.to(currentRoomId).emit('confetti-triggered');
@@ -258,8 +233,6 @@ app.prepare().then(() => {
 
   server.listen(port, (err) => {
     if (err) throw err;
-    console.log(`> Presentation Control System Server running at http://localhost:${port}`);
-    console.log(`> Host screen: http://localhost:${port}/present`);
-    console.log(`> Mobile remote: http://localhost:${port}/remote`);
+    console.log(`> Presentation Control System running on http://localhost:${port}`);
   });
 });

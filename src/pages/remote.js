@@ -12,14 +12,13 @@ import {
   Clock,
   Sparkles,
   UploadCloud,
-  User,
   Power,
   Sun,
   Moon,
-  Zap,
   Eye,
   Check
 } from 'lucide-react';
+import { getDeckByIdFromDB } from '../utils/db';
 import { SAMPLE_DECKS } from '../data/sampleDecks';
 import { processPdfFile, processImageFiles } from '../utils/pdfProcessor';
 
@@ -29,14 +28,13 @@ export default function RemotePage() {
   const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
 
-  // Deck & Slide Sync
-  const [deckId, setDeckId] = useState('futuristic-tech');
-  const [customDeck, setCustomDeck] = useState(null);
+  // Active Presentation State
+  const [activeDeck, setActiveDeck] = useState(null);
   const [currentSlide, setCurrentSlide] = useState(0);
-  const [totalSlides, setTotalSlides] = useState(6);
+  const [totalSlides, setTotalSlides] = useState(1);
   const [isZoomed, setIsZoomed] = useState(false);
 
-  // Active Controller Tab: 'nav' | 'zoom' | 'effects' | 'laser' | 'notes'
+  // Active Controller Tab
   const [activeTab, setActiveTab] = useState('nav');
 
   // Filters State
@@ -64,19 +62,25 @@ export default function RemotePage() {
   const [timerSeconds, setTimerSeconds] = useState(0);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
 
-  // Mobile Upload PDF State
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
-
-  const activeDeck = customDeck || SAMPLE_DECKS.find(d => d.id === deckId) || SAMPLE_DECKS[0];
-  const slide = activeDeck.slides ? (activeDeck.slides[currentSlide] || activeDeck.slides[0]) : activeDeck;
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const roomParam = urlParams.get('room') || 'DEMO';
     const userParam = urlParams.get('user') || '';
+    const deckParam = urlParams.get('deck');
     setRoomId(roomParam.toUpperCase());
     if (userParam) setUsername(userParam);
+
+    if (deckParam) {
+      getDeckByIdFromDB(deckParam).then(deck => {
+        if (deck) {
+          setActiveDeck(deck);
+          setTotalSlides(deck.slides ? deck.slides.length : 1);
+        }
+      });
+    }
 
     const newSocket = io();
     setSocket(newSocket);
@@ -87,10 +91,12 @@ export default function RemotePage() {
     });
 
     newSocket.on('room-state', (state) => {
-      if (state.customDeck) setCustomDeck(state.customDeck);
+      if (state.customDeck) {
+        setActiveDeck(state.customDeck);
+        setTotalSlides(state.customDeck.slides ? state.customDeck.slides.length : 1);
+      }
       if (state.currentSlide !== undefined) setCurrentSlide(state.currentSlide);
       if (state.totalSlides) setTotalSlides(state.totalSlides);
-      if (state.deckId) setDeckId(state.deckId);
       if (state.isZoomed !== undefined) setIsZoomed(state.isZoomed);
       if (state.filters) setFilters(state.filters);
       if (state.spotlight) setSpotlightActive(state.spotlight.active);
@@ -98,7 +104,7 @@ export default function RemotePage() {
     });
 
     newSocket.on('deck-uploaded', (data) => {
-      setCustomDeck(data.deck);
+      setActiveDeck(data.deck);
       setCurrentSlide(0);
       setTotalSlides(data.totalSlides || (data.deck.slides ? data.deck.slides.length : 1));
       setIsZoomed(false);
@@ -130,23 +136,23 @@ export default function RemotePage() {
       setBlackoutActive(data.blackout);
     });
 
-    return () => {
-      newSocket.disconnect();
-    };
+    return () => { newSocket.disconnect(); };
   }, []);
 
   // Timer Effect
   useEffect(() => {
     let interval = null;
     if (isTimerRunning) {
-      interval = setInterval(() => {
-        setTimerSeconds(sec => sec + 1);
-      }, 1000);
+      interval = setInterval(() => setTimerSeconds(sec => sec + 1), 1000);
     } else {
       clearInterval(interval);
     }
     return () => clearInterval(interval);
   }, [isTimerRunning]);
+
+  const slideDeck = activeDeck || SAMPLE_DECKS[0];
+  const slides = slideDeck.slides || [];
+  const currentSlideData = slides[currentSlide] || slides[0] || {};
 
   const triggerHaptic = () => {
     if (navigator.vibrate) {
@@ -183,9 +189,9 @@ export default function RemotePage() {
     }
   };
 
-  // Drag-to-Zoom Selection Handlers
+  // Smart Zoom Selection Drag Logic
   const getCanvasCoords = (e) => {
-    if (!zoomCanvasRef.current) return { x: 0, y: 0 };
+    if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
@@ -242,7 +248,7 @@ export default function RemotePage() {
     if (socket) socket.emit('zoom-area', zoomCoords);
   };
 
-  // Upload PDF directly from Mobile
+  // Mobile PDF Upload
   const handleMobilePdfUpload = async (e) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -255,21 +261,18 @@ export default function RemotePage() {
       let newDeck = null;
 
       if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-        newDeck = await processPdfFile(file, (p, t) => {
+        newDeck = await processPdfFile(file, username, (p, t) => {
           setUploadProgress(`Page ${p} of ${t}...`);
         });
       } else {
-        newDeck = await processImageFiles(files);
+        newDeck = await processImageFiles(files, username);
       }
 
       if (newDeck) {
-        setCustomDeck(newDeck);
+        setActiveDeck(newDeck);
         setCurrentSlide(0);
         setTotalSlides(newDeck.slides.length);
-
-        if (socket) {
-          socket.emit('upload-deck', { deck: newDeck });
-        }
+        if (socket) socket.emit('upload-deck', { deck: newDeck });
         triggerHaptic();
       }
     } catch (err) {
@@ -279,42 +282,7 @@ export default function RemotePage() {
     }
   };
 
-  // Filter Handlers
-  const handleFilterToggle = (filterName) => {
-    triggerHaptic();
-    const updated = { ...filters, [filterName]: !filters[filterName] };
-    setFilters(updated);
-    if (socket) socket.emit('apply-filter', updated);
-  };
-
-  const handleBlurChange = (e) => {
-    const val = parseInt(e.target.value, 10);
-    const updated = { ...filters, blur: val };
-    setFilters(updated);
-    if (socket) socket.emit('apply-filter', updated);
-  };
-
-  const handleToggleSpotlight = () => {
-    triggerHaptic();
-    const nextSpotlight = !spotlightActive;
-    setSpotlightActive(nextSpotlight);
-    if (socket) {
-      socket.emit('toggle-spotlight', {
-        active: nextSpotlight,
-        x: selectionBox ? (selectionBox.startX + selectionBox.endX) / 2 : 50,
-        y: selectionBox ? (selectionBox.startY + selectionBox.endY) / 2 : 50,
-        radius: 160
-      });
-    }
-  };
-
-  const handleToggleBlackout = () => {
-    triggerHaptic();
-    const nextBlackout = !blackoutActive;
-    setBlackoutActive(nextBlackout);
-    if (socket) socket.emit('toggle-blackout');
-  };
-
+  // Laser Pointer Handler
   const handleLaserTouchMove = (e) => {
     if (!laserTrackpadRef.current) return;
     const rect = laserTrackpadRef.current.getBoundingClientRect();
@@ -344,8 +312,8 @@ export default function RemotePage() {
 
   return (
     <div className="w-screen h-screen bg-[#F2F2F7] text-[#1C1C1E] flex flex-col justify-between overflow-hidden select-none touch-none">
-      {/* Top Header Bar */}
-      <div className="glass-panel-light px-5 py-3 flex items-center justify-between z-30 border-b border-white/80">
+      {/* Header Bar */}
+      <div className="glass-panel-light px-4 py-2 flex items-center justify-between z-30 border-b border-white">
         <div className="flex items-center space-x-2">
           <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
           <span className="text-xs font-mono font-bold tracking-wider text-slate-800">
@@ -353,10 +321,10 @@ export default function RemotePage() {
           </span>
         </div>
 
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2">
           <button
             onClick={() => setIsTimerRunning(!isTimerRunning)}
-            className="flex items-center space-x-1 text-xs font-mono px-2.5 py-1 rounded-full bg-white/80 border border-slate-200 text-slate-700 shadow-sm"
+            className="flex items-center space-x-1 text-xs font-mono px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-700 shadow-sm"
           >
             <Clock className="w-3 h-3 text-blue-600" />
             <span>{formatTime(timerSeconds)}</span>
@@ -365,7 +333,7 @@ export default function RemotePage() {
           {/* Quick ESC Reset Button */}
           <button
             onClick={handleEscReset}
-            className="glass-button-danger px-3 py-1.5 text-xs font-extrabold tracking-wider flex items-center space-x-1 shadow-sm"
+            className="glass-button-danger px-3 py-1 text-xs font-extrabold tracking-wider flex items-center space-x-1 shadow-sm"
             title="Reset Zoom & Filters"
           >
             <RotateCcw className="w-3.5 h-3.5" />
@@ -374,59 +342,59 @@ export default function RemotePage() {
         </div>
       </div>
 
-      {/* Main Tab Controller View */}
-      <div className="flex-1 relative overflow-hidden p-4 flex flex-col justify-center">
+      {/* Main Tab Controller (Responsive for Landscape & Portrait) */}
+      <div className="flex-1 relative overflow-hidden p-3 flex flex-col justify-center">
         <AnimatePresence mode="wait">
-          {/* TAB 1: Minimal Tactile Navigation View */}
+          {/* TAB 1: Navigation Control */}
           {activeTab === 'nav' && (
             <motion.div
               key="nav-tab"
-              initial={{ opacity: 0, scale: 0.96 }}
+              initial={{ opacity: 0, scale: 0.97 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.96 }}
-              className="w-full max-w-sm mx-auto h-full flex flex-col justify-between space-y-4"
+              exit={{ opacity: 0, scale: 0.97 }}
+              className="w-full max-w-md mx-auto h-full flex flex-col justify-between space-y-3"
             >
-              {/* Slide Counter & Preview Card */}
-              <div className="glass-card-light p-4 text-center space-y-2 border border-slate-200 shadow-sm">
-                <div className="flex justify-between items-center text-xs text-slate-500 font-mono">
+              {/* Slide Counter Header */}
+              <div className="glass-card-light p-3 text-center space-y-1 border border-slate-200 shadow-sm">
+                <div className="flex justify-between items-center text-[11px] text-slate-500 font-mono">
                   <span>SLIDE {currentSlide + 1} OF {totalSlides}</span>
-                  <span className="text-blue-600 font-semibold truncate max-w-[160px]">{activeDeck.title}</span>
+                  <span className="text-blue-600 font-bold truncate max-w-[180px]">{slideDeck.title}</span>
                 </div>
-                <div className="text-base font-bold text-[#1C1C1E] truncate">
-                  {slide.title || `Page ${currentSlide + 1}`}
+                <div className="text-sm font-extrabold text-[#1C1C1E] truncate">
+                  {currentSlideData.title || `Slide ${currentSlide + 1}`}
                 </div>
                 {isZoomed && (
-                  <div className="text-xs font-mono text-amber-700 bg-amber-500/20 px-2.5 py-0.5 rounded-full inline-block font-semibold">
+                  <div className="text-[10px] font-mono text-amber-700 bg-amber-500/20 px-2 py-0.5 rounded-full inline-block font-semibold">
                     ● Dynamic Zoom Active
                   </div>
                 )}
               </div>
 
-              {/* Large Tactile Navigation Buttons */}
-              <div className="grid grid-cols-2 gap-4 my-auto">
+              {/* Large Tactile Prev/Next Buttons */}
+              <div className="grid grid-cols-2 gap-3 my-auto">
                 <button
                   onClick={handlePrev}
                   disabled={currentSlide === 0}
-                  className={`h-40 glass-button-light flex flex-col items-center justify-center space-y-2 text-[#1C1C1E] border-2 border-white shadow-md ${currentSlide === 0 ? 'opacity-40 pointer-events-none' : 'hover:border-blue-500/30'}`}
+                  className={`h-36 landscape:h-24 glass-button-light flex flex-col items-center justify-center space-y-1 text-[#1C1C1E] border-2 border-white shadow-md ${currentSlide === 0 ? 'opacity-40 pointer-events-none' : 'hover:border-blue-500/30'}`}
                 >
-                  <ChevronLeft className="w-12 h-12 text-blue-600" />
-                  <span className="text-sm font-bold uppercase tracking-wider">PREV</span>
+                  <ChevronLeft className="w-10 h-10 text-blue-600" />
+                  <span className="text-xs font-extrabold uppercase tracking-wider">PREV</span>
                 </button>
 
                 <button
                   onClick={handleNext}
                   disabled={currentSlide === totalSlides - 1}
-                  className={`h-40 glass-button-primary flex flex-col items-center justify-center space-y-2 text-white border-2 border-white/40 shadow-lg shadow-blue-500/30 ${currentSlide === totalSlides - 1 ? 'opacity-40 pointer-events-none' : ''}`}
+                  className={`h-36 landscape:h-24 glass-button-primary flex flex-col items-center justify-center space-y-1 text-white border-2 border-white/40 shadow-md shadow-blue-500/30 ${currentSlide === totalSlides - 1 ? 'opacity-40 pointer-events-none' : ''}`}
                 >
-                  <ChevronRight className="w-12 h-12 text-white" />
-                  <span className="text-sm font-bold uppercase tracking-wider">NEXT</span>
+                  <ChevronRight className="w-10 h-10 text-white" />
+                  <span className="text-xs font-extrabold uppercase tracking-wider">NEXT</span>
                 </button>
               </div>
 
-              {/* Quick Action Buttons & PDF Mobile Upload */}
+              {/* Quick Actions Bar */}
               <div className="grid grid-cols-3 gap-2">
-                <label className="glass-button-light p-3 flex flex-col items-center text-xs space-y-1 cursor-pointer">
-                  <UploadCloud className="w-5 h-5 text-blue-600" />
+                <label className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 cursor-pointer font-bold">
+                  <UploadCloud className="w-4 h-4 text-blue-600" />
                   <span>{isUploading ? 'Loading...' : 'Upload PDF'}</span>
                   <input
                     type="file"
@@ -438,41 +406,41 @@ export default function RemotePage() {
 
                 <button
                   onClick={() => setActiveTab('zoom')}
-                  className="glass-button-light p-3 flex flex-col items-center text-xs space-y-1"
+                  className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 font-bold"
                 >
-                  <ZoomIn className="w-5 h-5 text-blue-600" />
+                  <ZoomIn className="w-4 h-4 text-blue-600" />
                   <span>Zoom Box</span>
                 </button>
 
                 <button
                   onClick={triggerConfetti}
-                  className="glass-button-light p-3 flex flex-col items-center text-xs space-y-1"
+                  className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 font-bold"
                 >
-                  <Sparkles className="w-5 h-5 text-purple-600" />
+                  <Sparkles className="w-4 h-4 text-purple-600" />
                   <span>Confetti</span>
                 </button>
               </div>
             </motion.div>
           )}
 
-          {/* TAB 2: Smart Zoom Canvas Bounding Box Selection */}
+          {/* TAB 2: Smart Drag-to-Zoom Live Mirroring Canvas */}
           {activeTab === 'zoom' && (
             <motion.div
               key="zoom-tab"
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -15 }}
-              className="w-full max-w-sm mx-auto h-full flex flex-col justify-between space-y-4"
+              className="w-full max-w-md mx-auto h-full flex flex-col justify-between space-y-3"
             >
               <div className="text-center">
-                <h3 className="text-base font-bold text-[#1C1C1E] flex items-center justify-center space-x-2">
-                  <ZoomIn className="w-5 h-5 text-blue-600" />
+                <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
+                  <ZoomIn className="w-4 h-4 text-blue-600" />
                   <span>Smart Drag-to-Zoom</span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">Draw a selection rectangle to focus host presentation</p>
+                <p className="text-[11px] text-slate-500">Draw a selection box on the live slide image below</p>
               </div>
 
-              {/* Mirrored Slide Canvas */}
+              {/* ACTUAL LIVE CURRENT SLIDE MIRROR CANVAS */}
               <div
                 ref={zoomCanvasRef}
                 onTouchStart={handleTouchStartZoom}
@@ -481,21 +449,25 @@ export default function RemotePage() {
                 onMouseDown={handleTouchStartZoom}
                 onMouseMove={handleTouchMoveZoom}
                 onMouseUp={handleTouchEndZoom}
-                className="relative w-full aspect-[16/10] bg-white rounded-2xl border-2 border-slate-300 shadow-xl overflow-hidden touch-none select-none flex flex-col justify-between p-3"
+                className="relative w-full aspect-[16/9] bg-slate-900 rounded-2xl border-2 border-slate-300 shadow-xl overflow-hidden touch-none select-none flex items-center justify-center"
               >
-                {slide.image ? (
-                  <img src={slide.image} alt="Slide Preview" className="w-full h-full object-contain pointer-events-none" />
+                {currentSlideData.image ? (
+                  <img
+                    src={currentSlideData.image}
+                    alt="Live Current Slide"
+                    className="w-full h-full object-contain pointer-events-none"
+                  />
                 ) : (
-                  <div className="my-auto space-y-1 text-center">
-                    <div className="text-xs font-bold text-slate-800">{slide.title}</div>
-                    <div className="text-[10px] text-slate-500 line-clamp-2">{slide.tagline || slide.notes}</div>
+                  <div className="p-4 text-center text-white space-y-1">
+                    <div className="text-xs font-bold">{currentSlideData.title || `Slide ${currentSlide + 1}`}</div>
+                    <div className="text-[10px] text-slate-400">{currentSlideData.tagline || currentSlideData.notes}</div>
                   </div>
                 )}
 
-                {/* Bounding Box Highlight */}
+                {/* Bounding Box Selection Highlight */}
                 {selectionBox && (
                   <div
-                    className="absolute border-2 border-blue-600 bg-blue-500/20 rounded-lg bounding-box-active-light pointer-events-none"
+                    className="absolute border-2 border-blue-600 bg-blue-500/25 rounded-lg bounding-box-active-light pointer-events-none"
                     style={{
                       left: `${Math.min(selectionBox.startX, selectionBox.endX)}%`,
                       top: `${Math.min(selectionBox.startY, selectionBox.endY)}%`,
@@ -503,7 +475,7 @@ export default function RemotePage() {
                       height: `${Math.abs(selectionBox.endY - selectionBox.startY)}%`,
                     }}
                   >
-                    <span className="absolute -top-5 left-0 text-[9px] bg-blue-600 text-white px-1.5 rounded font-mono font-bold">
+                    <span className="absolute -top-4 left-0 text-[8px] bg-blue-600 text-white px-1 rounded font-mono font-bold">
                       Target Area
                     </span>
                   </div>
@@ -512,35 +484,34 @@ export default function RemotePage() {
 
               <button
                 onClick={handleEscReset}
-                className="w-full glass-button-danger p-3 text-xs font-bold flex items-center justify-center space-x-2"
+                className="w-full glass-button-danger p-2.5 text-xs font-bold flex items-center justify-center space-x-2"
               >
-                <RotateCcw className="w-4 h-4" />
+                <RotateCcw className="w-3.5 h-3.5" />
                 <span>Reset Zoom (ESC)</span>
               </button>
             </motion.div>
           )}
 
-          {/* TAB 3: Effects */}
+          {/* TAB 3: Visual Effects */}
           {activeTab === 'effects' && (
             <motion.div
               key="effects-tab"
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -15 }}
-              className="w-full max-w-sm mx-auto h-full flex flex-col justify-between space-y-4"
+              className="w-full max-w-md mx-auto h-full flex flex-col justify-between space-y-3"
             >
               <div className="text-center">
-                <h3 className="text-base font-bold text-[#1C1C1E] flex items-center justify-center space-x-2">
-                  <Sliders className="w-5 h-5 text-purple-600" />
-                  <span>Real-Time Host Effects</span>
+                <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
+                  <Sliders className="w-4 h-4 text-purple-600" />
+                  <span>Real-Time Visual Effects</span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">Apply visual filters to host screen</p>
               </div>
 
-              <div className="glass-card-light p-4 space-y-4 border border-slate-200">
-                <div className="space-y-2">
+              <div className="glass-card-light p-3 space-y-3 border border-slate-200">
+                <div className="space-y-1">
                   <div className="flex justify-between text-xs text-slate-700 font-medium">
-                    <span>Blur Level</span>
+                    <span>Dynamic Blur</span>
                     <span className="font-mono text-purple-600">{filters.blur}px</span>
                   </div>
                   <input
@@ -548,52 +519,72 @@ export default function RemotePage() {
                     min="0"
                     max="15"
                     value={filters.blur}
-                    onChange={handleBlurChange}
+                    onChange={(e) => {
+                      const updated = { ...filters, blur: parseInt(e.target.value, 10) };
+                      setFilters(updated);
+                      if (socket) socket.emit('apply-filter', updated);
+                    }}
                     className="w-full accent-purple-600 bg-slate-200 rounded-lg cursor-pointer"
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 pt-2">
+                <div className="grid grid-cols-2 gap-2 pt-1">
                   <button
-                    onClick={() => handleFilterToggle('grayscale')}
-                    className={`glass-button-light p-3 text-xs font-medium flex items-center justify-between ${filters.grayscale ? 'bg-purple-500/20 border-purple-500' : ''}`}
+                    onClick={() => {
+                      const updated = { ...filters, grayscale: !filters.grayscale };
+                      setFilters(updated);
+                      if (socket) socket.emit('apply-filter', updated);
+                    }}
+                    className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between ${filters.grayscale ? 'bg-purple-500/20 border-purple-500' : ''}`}
                   >
                     <span>Grayscale</span>
-                    <Moon className="w-4 h-4 text-purple-600" />
+                    <Moon className="w-3.5 h-3.5 text-purple-600" />
                   </button>
 
                   <button
-                    onClick={() => handleFilterToggle('invert')}
-                    className={`glass-button-light p-3 text-xs font-medium flex items-center justify-between ${filters.invert ? 'bg-purple-500/20 border-purple-500' : ''}`}
+                    onClick={() => {
+                      const updated = { ...filters, invert: !filters.invert };
+                      setFilters(updated);
+                      if (socket) socket.emit('apply-filter', updated);
+                    }}
+                    className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between ${filters.invert ? 'bg-purple-500/20 border-purple-500' : ''}`}
                   >
                     <span>Invert</span>
-                    <Sun className="w-4 h-4 text-amber-600" />
+                    <Sun className="w-3.5 h-3.5 text-amber-600" />
                   </button>
 
                   <button
-                    onClick={handleToggleSpotlight}
-                    className={`glass-button-light p-3 text-xs font-medium flex items-center justify-between ${spotlightActive ? 'bg-blue-500/20 border-blue-500' : ''}`}
+                    onClick={() => {
+                      const next = !spotlightActive;
+                      setSpotlightActive(next);
+                      if (socket) socket.emit('toggle-spotlight', { active: next, x: 50, y: 50, radius: 160 });
+                    }}
+                    className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between ${spotlightActive ? 'bg-blue-500/20 border-blue-500' : ''}`}
                   >
                     <span>Spotlight Focus</span>
-                    <Eye className="w-4 h-4 text-blue-600" />
+                    <Eye className="w-3.5 h-3.5 text-blue-600" />
                   </button>
 
                   <button
-                    onClick={handleToggleBlackout}
-                    className={`glass-button-light p-3 text-xs font-medium flex items-center justify-between ${blackoutActive ? 'bg-rose-500/20 border-rose-500' : ''}`}
+                    onClick={() => {
+                      const next = !blackoutActive;
+                      setBlackoutActive(next);
+                      if (socket) socket.emit('toggle-blackout');
+                    }}
+                    className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between ${blackoutActive ? 'bg-rose-500/20 border-rose-500' : ''}`}
                   >
-                    <span>Blackout</span>
-                    <Power className="w-4 h-4 text-rose-600" />
+                    <span>Blackout Mode</span>
+                    <Power className="w-3.5 h-3.5 text-rose-600" />
                   </button>
                 </div>
               </div>
 
               <button
                 onClick={handleEscReset}
-                className="w-full glass-button-light p-3 text-xs font-bold text-slate-700 flex items-center justify-center space-x-2"
+                className="w-full glass-button-light p-2.5 text-xs font-bold text-slate-700 flex items-center justify-center space-x-2"
               >
-                <RotateCcw className="w-4 h-4 text-rose-600" />
-                <span>Reset All Effects</span>
+                <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                <span>Reset Visual Effects</span>
               </button>
             </motion.div>
           )}
@@ -605,14 +596,13 @@ export default function RemotePage() {
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -15 }}
-              className="w-full max-w-sm mx-auto h-full flex flex-col justify-between space-y-4"
+              className="w-full max-w-md mx-auto h-full flex flex-col justify-between space-y-3"
             >
               <div className="text-center">
-                <h3 className="text-base font-bold text-[#1C1C1E] flex items-center justify-center space-x-2">
-                  <MousePointer className="w-5 h-5 text-red-500" />
-                  <span>Laser Pointer Trackpad</span>
+                <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
+                  <MousePointer className="w-4 h-4 text-red-500" />
+                  <span>Laser Trackpad</span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">Drag finger on trackpad to control red laser dot</p>
               </div>
 
               <div
@@ -621,39 +611,38 @@ export default function RemotePage() {
                 onTouchEnd={handleLaserTouchEnd}
                 onMouseMove={handleLaserTouchMove}
                 onMouseLeave={handleLaserTouchEnd}
-                className="w-full aspect-[4/3] glass-card-light bg-slate-100 border-2 border-red-500/40 rounded-2xl flex flex-col items-center justify-center relative touch-none select-none overflow-hidden shadow-inner"
+                className="w-full aspect-[16/9] glass-card-light bg-slate-100 border-2 border-red-500/40 rounded-2xl flex flex-col items-center justify-center relative touch-none select-none overflow-hidden shadow-inner"
               >
-                <div className="w-12 h-12 rounded-full bg-red-500/20 border border-red-500 flex items-center justify-center animate-ping" />
-                <span className="text-xs font-mono text-red-600 mt-4 tracking-wider uppercase font-bold">
-                  [ TOUCH TRACKPAD SURFACE ]
+                <div className="w-10 h-10 rounded-full bg-red-500/20 border border-red-500 flex items-center justify-center animate-ping" />
+                <span className="text-[11px] font-mono text-red-600 mt-2 tracking-wider uppercase font-bold">
+                  [ DRAG FINGER TO MOVE LASER ]
                 </span>
               </div>
             </motion.div>
           )}
 
-          {/* TAB 5: Speaker Notes */}
+          {/* TAB 5: Confidential Speaker Notes */}
           {activeTab === 'notes' && (
             <motion.div
               key="notes-tab"
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -15 }}
-              className="w-full max-w-sm mx-auto h-full flex flex-col justify-between space-y-4"
+              className="w-full max-w-md mx-auto h-full flex flex-col justify-between space-y-3"
             >
               <div className="text-center">
-                <h3 className="text-base font-bold text-[#1C1C1E] flex items-center justify-center space-x-2">
-                  <FileText className="w-5 h-5 text-emerald-600" />
+                <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
+                  <FileText className="w-4 h-4 text-emerald-600" />
                   <span>Speaker Notes</span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">Confidential presenter notes</p>
               </div>
 
-              <div className="glass-card-light p-4 space-y-3 flex-1 overflow-y-auto max-h-[45vh] border border-slate-200">
+              <div className="glass-card-light p-4 space-y-2 flex-1 overflow-y-auto max-h-[45vh] border border-slate-200">
                 <div className="text-xs font-bold text-emerald-600 uppercase tracking-wider font-mono">
                   Slide {currentSlide + 1} Notes:
                 </div>
-                <p className="text-sm text-slate-700 leading-relaxed font-light">
-                  {slide.notes || 'No confidential speaker notes recorded for this slide.'}
+                <p className="text-xs text-slate-700 leading-relaxed font-normal">
+                  {currentSlideData.notes || 'No confidential speaker notes added for this slide. You can add notes from the My Files dashboard.'}
                 </p>
               </div>
             </motion.div>
@@ -662,45 +651,45 @@ export default function RemotePage() {
       </div>
 
       {/* Bottom iOS Liquid Glass Floating Dock */}
-      <div className="p-4 z-30">
-        <div className="glass-dock-light max-w-sm mx-auto p-2 flex justify-around items-center border border-white">
+      <div className="p-3 z-30">
+        <div className="glass-dock-light max-w-md mx-auto p-1.5 flex justify-around items-center border border-white shadow-lg">
           <button
             onClick={() => { triggerHaptic(); setActiveTab('nav'); }}
-            className={`p-3 rounded-2xl flex flex-col items-center text-[10px] space-y-1 transition-all ${activeTab === 'nav' ? 'bg-blue-500/15 text-blue-600 font-bold border border-blue-500/30' : 'text-slate-500'}`}
+            className={`p-2.5 rounded-2xl flex flex-col items-center text-[9px] space-y-0.5 transition-all ${activeTab === 'nav' ? 'bg-blue-500/15 text-blue-600 font-bold border border-blue-500/30' : 'text-slate-500'}`}
           >
-            <ChevronRight className="w-5 h-5" />
+            <ChevronRight className="w-4 h-4" />
             <span>Control</span>
           </button>
 
           <button
             onClick={() => { triggerHaptic(); setActiveTab('zoom'); }}
-            className={`p-3 rounded-2xl flex flex-col items-center text-[10px] space-y-1 transition-all ${activeTab === 'zoom' ? 'bg-blue-500/15 text-blue-600 font-bold border border-blue-500/30' : 'text-slate-500'}`}
+            className={`p-2.5 rounded-2xl flex flex-col items-center text-[9px] space-y-0.5 transition-all ${activeTab === 'zoom' ? 'bg-blue-500/15 text-blue-600 font-bold border border-blue-500/30' : 'text-slate-500'}`}
           >
-            <ZoomIn className="w-5 h-5" />
+            <ZoomIn className="w-4 h-4" />
             <span>Smart Zoom</span>
           </button>
 
           <button
             onClick={() => { triggerHaptic(); setActiveTab('effects'); }}
-            className={`p-3 rounded-2xl flex flex-col items-center text-[10px] space-y-1 transition-all ${activeTab === 'effects' ? 'bg-purple-500/15 text-purple-600 font-bold border border-purple-500/30' : 'text-slate-500'}`}
+            className={`p-2.5 rounded-2xl flex flex-col items-center text-[9px] space-y-0.5 transition-all ${activeTab === 'effects' ? 'bg-purple-500/15 text-purple-600 font-bold border border-purple-500/30' : 'text-slate-500'}`}
           >
-            <Sliders className="w-5 h-5" />
+            <Sliders className="w-4 h-4" />
             <span>Effects</span>
           </button>
 
           <button
             onClick={() => { triggerHaptic(); setActiveTab('laser'); }}
-            className={`p-3 rounded-2xl flex flex-col items-center text-[10px] space-y-1 transition-all ${activeTab === 'laser' ? 'bg-red-500/15 text-red-600 font-bold border border-red-500/30' : 'text-slate-500'}`}
+            className={`p-2.5 rounded-2xl flex flex-col items-center text-[9px] space-y-0.5 transition-all ${activeTab === 'laser' ? 'bg-red-500/15 text-red-600 font-bold border border-red-500/30' : 'text-slate-500'}`}
           >
-            <MousePointer className="w-5 h-5" />
+            <MousePointer className="w-4 h-4" />
             <span>Laser</span>
           </button>
 
           <button
             onClick={() => { triggerHaptic(); setActiveTab('notes'); }}
-            className={`p-3 rounded-2xl flex flex-col items-center text-[10px] space-y-1 transition-all ${activeTab === 'notes' ? 'bg-emerald-500/15 text-emerald-600 font-bold border border-emerald-500/30' : 'text-slate-500'}`}
+            className={`p-2.5 rounded-2xl flex flex-col items-center text-[9px] space-y-0.5 transition-all ${activeTab === 'notes' ? 'bg-emerald-500/15 text-emerald-600 font-bold border border-emerald-500/30' : 'text-slate-500'}`}
           >
-            <FileText className="w-5 h-5" />
+            <FileText className="w-4 h-4" />
             <span>Notes</span>
           </button>
         </div>
