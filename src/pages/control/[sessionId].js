@@ -38,6 +38,10 @@ export default function ControlPage() {
   const [isZoomed, setIsZoomed] = useState(false);
   const [notes, setNotes] = useState([]);
 
+  // Preloading State
+  const [isPreloading, setIsPreloading] = useState(true);
+  const [preloadProgress, setPreloadProgress] = useState(0);
+
   // Active tab: 'nav' | 'zoom' | 'effects' | 'laser' | 'notes'
   const [activeTab, setActiveTab] = useState('nav');
 
@@ -46,7 +50,7 @@ export default function ControlPage() {
   const [spotlightActive, setSpotlightActive] = useState(false);
   const [blackoutActive, setBlackoutActive] = useState(false);
 
-  // Zoom selection
+  // Zoom selection (16:9 Aspect Ratio Enforced)
   const [isDrawing, setIsDrawing] = useState(false);
   const [selectionBox, setSelectionBox] = useState(null);
   const zoomCanvasRef = useRef(null);
@@ -63,6 +67,27 @@ export default function ControlPage() {
       try { navigator.vibrate(15); } catch (e) {}
     }
   };
+
+  // PRELOAD ALL SLIDE IMAGES FOR ZERO LAG ON MOBILE
+  useEffect(() => {
+    if (!deckId || !totalSlides) return;
+
+    setIsPreloading(true);
+    setPreloadProgress(0);
+    let loadedCount = 0;
+
+    for (let i = 0; i < totalSlides; i++) {
+      const img = new Image();
+      img.onload = img.onerror = () => {
+        loadedCount++;
+        setPreloadProgress(Math.round((loadedCount / totalSlides) * 100));
+        if (loadedCount >= totalSlides) {
+          setIsPreloading(false);
+        }
+      };
+      img.src = `/api/slides/${deckId}/${i}`;
+    }
+  }, [deckId, totalSlides]);
 
   // ── Socket Connection ──
   useEffect(() => {
@@ -157,7 +182,7 @@ export default function ControlPage() {
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── Zoom Drag ──
+  // ── 16:9 Rectangular Enforced Drag-to-Zoom Selection ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -173,26 +198,48 @@ export default function ControlPage() {
     triggerHaptic();
     const c = getCanvasCoords(e);
     setIsDrawing(true);
-    setSelectionBox({ startX: c.pctX, startY: c.pctY, endX: c.pctX + 1, endY: c.pctY + 1 });
+    // Initial 16:9 ratio box
+    const w = 15;
+    const h = w / (16 / 9);
+    setSelectionBox({
+      startX: c.pctX,
+      startY: c.pctY,
+      width: w,
+      height: h,
+    });
   };
 
   const onZoomMove = (e) => {
     if (!isDrawing) return;
     const c = getCanvasCoords(e);
-    setSelectionBox(prev => prev ? { ...prev, endX: c.pctX, endY: c.pctY } : null);
+    setSelectionBox(prev => {
+      if (!prev) return null;
+      // Calculate width and enforce 16:9 aspect ratio for height
+      const rawW = Math.abs(c.pctX - prev.startX);
+      const width = Math.max(8, rawW);
+      const height = width / (16 / 9); // Enforce 16:9 presentation ratio!
+
+      const startX = c.pctX < prev.startX ? c.pctX : prev.startX;
+      const startY = c.pctY < prev.startY ? Math.max(0, prev.startY - height) : prev.startY;
+
+      return { startX, startY, width, height };
+    });
   };
 
   const onZoomEnd = () => {
     if (!isDrawing || !selectionBox) return;
     setIsDrawing(false);
     triggerHaptic();
-    const minX = Math.min(selectionBox.startX, selectionBox.endX);
-    const maxX = Math.max(selectionBox.startX, selectionBox.endX);
-    const minY = Math.min(selectionBox.startY, selectionBox.endY);
-    const maxY = Math.max(selectionBox.startY, selectionBox.endY);
-    const coords = { x: minX, y: minY, width: Math.max(10, maxX - minX), height: Math.max(10, maxY - minY) };
+
+    const zoomCoords = {
+      x: selectionBox.startX,
+      y: selectionBox.startY,
+      width: selectionBox.width,
+      height: selectionBox.height,
+    };
+
     setIsZoomed(true);
-    if (socket) socket.emit('zoom-area', coords);
+    if (socket) socket.emit('zoom-area', zoomCoords);
   };
 
   // ── Laser ──
@@ -299,9 +346,9 @@ export default function ControlPage() {
             className="flex-1 flex flex-col justify-between gap-3 py-2">
             <div className="text-center">
               <h3 className="text-sm font-bold flex items-center justify-center gap-1.5">
-                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> Drag to Zoom
+                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> 16:9 Smart Drag-to-Zoom
               </h3>
-              <p className="text-[11px] text-[var(--dc-text-secondary)]">Draw a box on the slide below</p>
+              <p className="text-[11px] text-[var(--dc-text-secondary)]">Draw a 16:9 box on the live slide image below</p>
             </div>
 
             <div ref={zoomCanvasRef}
@@ -312,11 +359,16 @@ export default function ControlPage() {
               {selectionBox && (
                 <div className="absolute border-2 border-[var(--dc-blue)] bg-blue-500/20 rounded-lg dc-zoom-selection pointer-events-none"
                   style={{
-                    left: `${Math.min(selectionBox.startX, selectionBox.endX)}%`,
-                    top: `${Math.min(selectionBox.startY, selectionBox.endY)}%`,
-                    width: `${Math.abs(selectionBox.endX - selectionBox.startX)}%`,
-                    height: `${Math.abs(selectionBox.endY - selectionBox.startY)}%`,
-                  }} />
+                    left: `${selectionBox.startX}%`,
+                    top: `${selectionBox.startY}%`,
+                    width: `${selectionBox.width}%`,
+                    height: `${selectionBox.height}%`,
+                  }}
+                >
+                  <span className="absolute -top-3.5 left-0 text-[8px] bg-[var(--dc-blue)] text-white px-1 rounded font-mono font-bold">
+                    16:9 Target
+                  </span>
+                </div>
               )}
             </div>
 
@@ -441,6 +493,34 @@ export default function ControlPage() {
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] bg-[var(--dc-bg)] text-[var(--dc-text)] flex flex-col overflow-hidden select-none">
+      {/* Preloading HUD Progress Overlay */}
+      <AnimatePresence>
+        {isPreloading && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-black/85 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 space-y-4"
+          >
+            <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-blue-500/30">
+              D
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-bold text-white">Caching Presentation Pages</h3>
+              <p className="text-xs text-slate-400">Loading {totalSlides} slides into mobile memory</p>
+            </div>
+            <div className="w-64 bg-slate-800 rounded-full h-2 overflow-hidden p-0.5 border border-slate-700">
+              <motion.div
+                className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full rounded-full"
+                animate={{ width: `${preloadProgress}%` }}
+                transition={{ duration: 0.2 }}
+              />
+            </div>
+            <span className="text-xs font-mono text-blue-400 font-bold">{preloadProgress}% Cached</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <div className="dc-panel rounded-none px-4 py-2 flex items-center justify-between z-30 flex-shrink-0 border-b border-[var(--dc-border)]">
         <div className="flex items-center gap-2">

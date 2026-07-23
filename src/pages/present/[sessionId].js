@@ -10,7 +10,6 @@ import {
   WifiOff,
   Users,
   EyeOff,
-  Eye,
   StopCircle,
   Loader2,
 } from 'lucide-react';
@@ -30,10 +29,12 @@ export default function HostScreen() {
   const [deckTitle, setDeckTitle] = useState('');
   const [currentSlide, setCurrentSlide] = useState(0);
   const [totalSlides, setTotalSlides] = useState(1);
+  const [slideDirection, setSlideDirection] = useState(1); // 1 = Next (L->R), -1 = Prev (R->L)
+  const currentSlideRef = useRef(0);
 
-  // Slide image
-  const [slideUrl, setSlideUrl] = useState(null);
-  const [nextSlideUrl, setNextSlideUrl] = useState(null);
+  // Preloading State
+  const [isPreloading, setIsPreloading] = useState(true);
+  const [preloadProgress, setPreloadProgress] = useState(0);
 
   // Overlays
   const [isZoomed, setIsZoomed] = useState(false);
@@ -49,21 +50,31 @@ export default function HostScreen() {
 
   const containerRef = useRef(null);
 
-  // Preload slide image
-  const getSlideUrl = (dId, index) => dId ? `/api/slides/${dId}/${index}` : null;
-
+  // Keep currentSlideRef in sync for direction check
   useEffect(() => {
-    if (deckId !== null && currentSlide >= 0) {
-      setSlideUrl(getSlideUrl(deckId, currentSlide));
-      // Preload next slide
-      if (currentSlide < totalSlides - 1) {
-        const nextUrl = getSlideUrl(deckId, currentSlide + 1);
-        setNextSlideUrl(nextUrl);
-        const img = new Image();
-        img.src = nextUrl;
-      }
+    currentSlideRef.current = currentSlide;
+  }, [currentSlide]);
+
+  // PRELOAD ALL SLIDES BEFORE PRESENTATION
+  useEffect(() => {
+    if (!deckId || !totalSlides) return;
+
+    setIsPreloading(true);
+    setPreloadProgress(0);
+    let loadedCount = 0;
+
+    for (let i = 0; i < totalSlides; i++) {
+      const img = new Image();
+      img.onload = img.onerror = () => {
+        loadedCount++;
+        setPreloadProgress(Math.round((loadedCount / totalSlides) * 100));
+        if (loadedCount >= totalSlides) {
+          setIsPreloading(false);
+        }
+      };
+      img.src = `/api/slides/${deckId}/${i}`;
     }
-  }, [deckId, currentSlide, totalSlides]);
+  }, [deckId, totalSlides]);
 
   // Socket connection
   useEffect(() => {
@@ -100,7 +111,9 @@ export default function HostScreen() {
     });
 
     newSocket.on('slide-updated', (data) => {
-      setCurrentSlide(data.currentSlide);
+      const newIdx = data.currentSlide;
+      setSlideDirection(newIdx >= currentSlideRef.current ? 1 : -1);
+      setCurrentSlide(newIdx);
       setTotalSlides(data.totalSlides);
       setIsZoomed(false);
       setZoomCoords({ x: 0, y: 0, width: 100, height: 100 });
@@ -142,12 +155,14 @@ export default function HostScreen() {
         e.preventDefault();
         if (currentSlide < totalSlides - 1) {
           const next = currentSlide + 1;
+          setSlideDirection(1);
           setCurrentSlide(next);
           if (socket) socket.emit('slide-change', { slideIndex: next });
         }
       } else if (e.key === 'ArrowLeft') {
         if (currentSlide > 0) {
           const prev = currentSlide - 1;
+          setSlideDirection(-1);
           setCurrentSlide(prev);
           if (socket) socket.emit('slide-change', { slideIndex: prev });
         }
@@ -183,14 +198,24 @@ export default function HostScreen() {
     setSessionActive(false);
   };
 
-  // Zoom transform
+  // Exact 16:9 Aspect Ratio Rectangular Zoom Calculation
   const calcZoom = () => {
     if (!isZoomed || !zoomCoords) return { scale: 1, transformOrigin: '50% 50%' };
     const { x, y, width, height } = zoomCoords;
-    const cx = Math.min(100, Math.max(0, parseFloat(x) + parseFloat(width) / 2));
-    const cy = Math.min(100, Math.max(0, parseFloat(y) + parseFloat(height) / 2));
-    const maxDim = Math.max(parseFloat(width), parseFloat(height));
-    const scale = Math.min(6, Math.max(1.2, maxDim > 0 ? 100 / maxDim : 1));
+
+    const pxX = parseFloat(x) || 0;
+    const pxY = parseFloat(y) || 0;
+    const pxW = Math.max(5, parseFloat(width) || 100);
+    const pxH = Math.max(5, parseFloat(height) || 100);
+
+    const cx = Math.min(100, Math.max(0, pxX + pxW / 2));
+    const cy = Math.min(100, Math.max(0, pxY + pxH / 2));
+
+    // Calculate scale required to make the selection fill the 16:9 viewport
+    const scaleX = 100 / pxW;
+    const scaleY = 100 / pxH;
+    const scale = Math.min(6, Math.max(1.2, Math.min(scaleX, scaleY)));
+
     return { scale, transformOrigin: `${cx}% ${cy}%` };
   };
 
@@ -204,6 +229,25 @@ export default function HostScreen() {
     contrast(${filters.contrast}%)
     brightness(${filters.brightness}%)
   `.trim();
+
+  // Slide Animation Variants for Left-to-Right and Right-to-Left
+  const slideVariants = {
+    enter: (dir) => ({
+      x: dir > 0 ? '100%' : '-100%',
+      opacity: 0,
+      scale: 0.96,
+    }),
+    center: {
+      x: '0%',
+      opacity: 1,
+      scale: 1,
+    },
+    exit: (dir) => ({
+      x: dir < 0 ? '100%' : '-100%',
+      opacity: 0,
+      scale: 0.96,
+    }),
+  };
 
   // Error / ended states
   if (sessionError || (!sessionActive && deckId)) {
@@ -237,6 +281,34 @@ export default function HostScreen() {
       ref={containerRef}
       className="relative w-screen h-screen bg-black text-white overflow-hidden select-none flex items-center justify-center"
     >
+      {/* Preloading HUD Progress Overlay */}
+      <AnimatePresence>
+        {isPreloading && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 space-y-4"
+          >
+            <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-blue-500/30">
+              D
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-bold text-white">Preloading High-Definition Presentation</h3>
+              <p className="text-xs text-slate-400">Caching all {totalSlides} slides in memory for zero-lag presentation</p>
+            </div>
+            <div className="w-64 bg-slate-800 rounded-full h-2 overflow-hidden p-0.5 border border-slate-700">
+              <motion.div
+                className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full rounded-full"
+                animate={{ width: `${preloadProgress}%` }}
+                transition={{ duration: 0.2 }}
+              />
+            </div>
+            <span className="text-xs font-mono text-blue-400 font-bold">{preloadProgress}% Loaded</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Blackout Overlay */}
       <AnimatePresence>
         {blackout && (
@@ -253,7 +325,7 @@ export default function HostScreen() {
         )}
       </AnimatePresence>
 
-      {/* Slide Canvas */}
+      {/* Main 16:9 Presentation Canvas */}
       <div className="w-full h-full relative flex items-center justify-center">
         <motion.div
           className="w-full h-full relative overflow-hidden flex items-center justify-center"
@@ -261,28 +333,23 @@ export default function HostScreen() {
           transition={{ type: 'spring', stiffness: 190, damping: 25 }}
           style={{ filter: cssFilter }}
         >
-          <AnimatePresence mode="wait">
+          <AnimatePresence mode="wait" custom={slideDirection}>
             <motion.div
               key={`slide-${currentSlide}`}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.25 }}
-              className="w-full h-full flex items-center justify-center"
+              custom={slideDirection}
+              variants={slideVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ type: 'spring', stiffness: 260, damping: 28 }}
+              className="w-full h-full flex items-center justify-center absolute inset-0"
             >
-              {slideUrl ? (
-                <img
-                  src={slideUrl}
-                  alt={`Slide ${currentSlide + 1}`}
-                  className="max-w-full max-h-full object-contain"
-                  draggable={false}
-                />
-              ) : (
-                <div className="text-center space-y-2">
-                  <Loader2 className="w-6 h-6 animate-spin text-slate-500 mx-auto" />
-                  <p className="text-xs text-slate-600 font-mono">Loading slide...</p>
-                </div>
-              )}
+              <img
+                src={`/api/slides/${deckId}/${currentSlide}`}
+                alt={`Slide ${currentSlide + 1}`}
+                className="max-w-full max-h-full object-contain"
+                draggable={false}
+              />
             </motion.div>
           </AnimatePresence>
         </motion.div>
