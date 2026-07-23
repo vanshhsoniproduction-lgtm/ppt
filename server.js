@@ -21,6 +21,7 @@ function getOrCreateRoom(roomId) {
       currentSlide: 0,
       totalSlides: 6,
       deckId: 'futuristic-tech',
+      customDeck: null, // Holds uploaded PDF / PPT deck data
       isZoomed: false,
       zoomCoords: { x: 0, y: 0, width: 100, height: 100 },
       transitionType: 'slide',
@@ -52,9 +53,15 @@ function getOrCreateRoom(roomId) {
 
 app.prepare().then(() => {
   const expressApp = express();
+
+  // Increase payload limit for large PDF slide data URLs
+  expressApp.use(express.json({ limit: '100mb' }));
+  expressApp.use(express.urlencoded({ limit: '100mb', extended: true }));
+
   const server = createServer(expressApp);
 
   const io = new Server(server, {
+    maxHttpBufferSize: 1e8, // 100 MB buffer for PDF slide images
     cors: {
       origin: '*',
       methods: ['GET', 'POST']
@@ -86,13 +93,30 @@ app.prepare().then(() => {
       console.log(`[Socket] ${role} joined room: ${cleanRoomId}`);
     });
 
+    socket.on('upload-deck', ({ deck }) => {
+      if (!currentRoomId || !deck) return;
+      const room = getOrCreateRoom(currentRoomId);
+      room.customDeck = deck;
+      room.deckId = deck.id;
+      room.currentSlide = 0;
+      room.totalSlides = deck.slides ? deck.slides.length : 1;
+      room.isZoomed = false;
+
+      io.to(currentRoomId).emit('deck-uploaded', {
+        deck,
+        currentSlide: 0,
+        totalSlides: room.totalSlides
+      });
+      console.log(`[Socket] Custom deck uploaded to room ${currentRoomId}: ${deck.title}`);
+    });
+
     socket.on('slide-change', ({ slideIndex, totalSlides }) => {
       if (!currentRoomId) return;
       const room = getOrCreateRoom(currentRoomId);
       room.currentSlide = slideIndex;
       if (totalSlides) room.totalSlides = totalSlides;
 
-      // Auto reset zoom on slide change for smooth UX
+      // Auto reset zoom on slide change
       room.isZoomed = false;
       room.zoomCoords = { x: 0, y: 0, width: 100, height: 100 };
 
@@ -107,7 +131,7 @@ app.prepare().then(() => {
       if (!currentRoomId) return;
       const room = getOrCreateRoom(currentRoomId);
       room.isZoomed = true;
-      room.zoomCoords = coords; // { x, y, width, height } in percentage 0..100
+      room.zoomCoords = coords; // { x, y, width, height }
 
       io.to(currentRoomId).emit('zoom-updated', {
         isZoomed: true,
@@ -200,6 +224,7 @@ app.prepare().then(() => {
       if (!currentRoomId) return;
       const room = getOrCreateRoom(currentRoomId);
       room.deckId = deckId;
+      room.customDeck = null;
       room.currentSlide = 0;
       room.isZoomed = false;
 
