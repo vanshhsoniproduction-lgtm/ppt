@@ -16,11 +16,11 @@ import {
   Sun,
   Moon,
   Eye,
-  Radio
+  Radio,
+  RefreshCw
 } from 'lucide-react';
 import { getDeckByIdFromDB } from '../utils/db';
 import { processPdfFile, processImageFiles } from '../utils/pdfProcessor';
-import { SAMPLE_DECKS } from '../data/sampleDecks';
 
 export default function RemotePage() {
   const [roomId, setRoomId] = useState('DEMO');
@@ -65,6 +65,17 @@ export default function RemotePage() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
 
+  const loadLocalDeck = (deckId) => {
+    if (deckId) {
+      getDeckByIdFromDB(deckId).then(deck => {
+        if (deck) {
+          setActiveDeck(deck);
+          setTotalSlides(deck.slides ? deck.slides.length : 1);
+        }
+      });
+    }
+  };
+
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const roomParam = urlParams.get('room') || 'DEMO';
@@ -73,14 +84,7 @@ export default function RemotePage() {
     setRoomId(roomParam.toUpperCase());
     if (userParam) setUsername(userParam);
 
-    if (deckParam) {
-      getDeckByIdFromDB(deckParam).then(deck => {
-        if (deck) {
-          setActiveDeck(deck);
-          setTotalSlides(deck.slides ? deck.slides.length : 1);
-        }
-      });
-    }
+    loadLocalDeck(deckParam);
 
     const newSocket = io();
     setSocket(newSocket);
@@ -150,8 +154,7 @@ export default function RemotePage() {
     return () => clearInterval(interval);
   }, [isTimerRunning]);
 
-  // Fallback to active deck or sample deck for smooth initial render
-  const slideDeck = activeDeck || SAMPLE_DECKS[0];
+  const slideDeck = activeDeck;
   const slides = slideDeck ? (slideDeck.slides || []) : [];
   const currentSlideData = slides[currentSlide] || slides[0] || {};
 
@@ -187,6 +190,14 @@ export default function RemotePage() {
     if (socket) {
       socket.emit('reset-zoom');
       socket.emit('reset-filters');
+    }
+  };
+
+  // Re-sync Session & Clear Stale State
+  const handleResyncSession = () => {
+    triggerHaptic();
+    if (socket) {
+      socket.emit('join-room', { roomId, role: 'remote' });
     }
   };
 
@@ -322,6 +333,14 @@ export default function RemotePage() {
 
         <div className="flex items-center space-x-2">
           <button
+            onClick={handleResyncSession}
+            className="p-1.5 rounded-full bg-white border border-slate-200 text-blue-600 hover:bg-blue-50 shadow-sm"
+            title="Re-sync Session"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+
+          <button
             onClick={() => setIsTimerRunning(!isTimerRunning)}
             className="flex items-center space-x-1 text-xs font-mono px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-700 shadow-sm"
           >
@@ -343,310 +362,339 @@ export default function RemotePage() {
 
       {/* Main Tab Controller View */}
       <div className="flex-1 relative overflow-hidden p-3 flex flex-col justify-center max-w-md mx-auto w-full">
-        <AnimatePresence mode="wait">
-          {/* TAB 1: Navigation Control */}
-          {activeTab === 'nav' && (
-            <motion.div
-              key="nav-tab"
-              initial={{ opacity: 0, scale: 0.97 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.97 }}
-              className="w-full h-full flex flex-col justify-between space-y-2 py-1"
-            >
-              {/* Slide Counter Header */}
-              <div className="glass-card-light p-3 text-center space-y-1 border border-slate-200 shadow-sm flex-shrink-0">
-                <div className="flex justify-between items-center text-[11px] text-slate-500 font-mono">
-                  <span>SLIDE {currentSlide + 1} OF {totalSlides}</span>
-                  <span className="text-blue-600 font-bold truncate max-w-[180px]">{slideDeck.title}</span>
-                </div>
-                <div className="text-sm font-extrabold text-[#1C1C1E] truncate">
-                  {currentSlideData.title || `Slide ${currentSlide + 1}`}
-                </div>
-                {isZoomed && (
-                  <div className="text-[10px] font-mono text-amber-700 bg-amber-500/20 px-2 py-0.5 rounded-full inline-block font-semibold">
-                    ● Dynamic Zoom Active
-                  </div>
-                )}
-              </div>
+        {!activeDeck ? (
+          /* Sleek Minimal Loading & Session Sync State */
+          <div className="glass-panel-light p-6 rounded-3xl text-center space-y-4 border border-white shadow-xl my-auto">
+            <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white mx-auto shadow-md shadow-blue-500/20">
+              <Radio className="w-6 h-6 animate-pulse" />
+            </div>
+            <h3 className="text-base font-extrabold text-[#1C1C1E]">Connecting to Presentation</h3>
+            <p className="text-xs text-slate-500 font-medium leading-relaxed">
+              Joined Room <strong className="text-blue-600 font-mono">{roomId}</strong>. Syncing live slides from host screen...
+            </p>
 
-              {/* Large Tactile Prev/Next Buttons */}
-              <div className="grid grid-cols-2 gap-3 my-auto flex-1 items-center max-h-[45vh]">
-                <button
-                  onClick={handlePrev}
-                  disabled={currentSlide === 0}
-                  className={`h-full min-h-[120px] max-h-[220px] glass-button-light flex flex-col items-center justify-center space-y-1 text-[#1C1C1E] border-2 border-white shadow-md active:scale-95 transition-transform ${currentSlide === 0 ? 'opacity-40 pointer-events-none' : 'hover:border-blue-500/30'}`}
-                >
-                  <ChevronLeft className="w-12 h-12 text-blue-600" />
-                  <span className="text-xs font-extrabold uppercase tracking-wider">PREV</span>
-                </button>
-
-                <button
-                  onClick={handleNext}
-                  disabled={currentSlide === totalSlides - 1}
-                  className={`h-full min-h-[120px] max-h-[220px] glass-button-primary flex flex-col items-center justify-center space-y-1 text-white border-2 border-white/40 shadow-md shadow-blue-500/30 active:scale-95 transition-transform ${currentSlide === totalSlides - 1 ? 'opacity-40 pointer-events-none' : ''}`}
-                >
-                  <ChevronRight className="w-12 h-12 text-white" />
-                  <span className="text-xs font-extrabold uppercase tracking-wider">NEXT</span>
-                </button>
-              </div>
-
-              {/* Quick Actions Bar */}
-              <div className="grid grid-cols-3 gap-2 flex-shrink-0">
-                <label className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 cursor-pointer font-bold active:scale-95">
-                  <UploadCloud className="w-4 h-4 text-blue-600" />
-                  <span>{isUploading ? 'Loading...' : 'Upload PDF'}</span>
-                  <input
-                    type="file"
-                    accept=".pdf,image/*"
-                    onChange={handleMobilePdfUpload}
-                    className="hidden"
-                  />
-                </label>
-
-                <button
-                  onClick={() => setActiveTab('zoom')}
-                  className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 font-bold active:scale-95"
-                >
-                  <ZoomIn className="w-4 h-4 text-blue-600" />
-                  <span>Zoom Box</span>
-                </button>
-
-                <button
-                  onClick={triggerConfetti}
-                  className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 font-bold active:scale-95"
-                >
-                  <Sparkles className="w-4 h-4 text-purple-600" />
-                  <span>Confetti</span>
-                </button>
-              </div>
-            </motion.div>
-          )}
-
-          {/* TAB 2: Smart Drag-to-Zoom Live Mirroring Canvas */}
-          {activeTab === 'zoom' && (
-            <motion.div
-              key="zoom-tab"
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              className="w-full h-full flex flex-col justify-between space-y-2 py-1"
-            >
-              <div className="text-center flex-shrink-0">
-                <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
-                  <ZoomIn className="w-4 h-4 text-blue-600" />
-                  <span>Smart Drag-to-Zoom</span>
-                </h3>
-                <p className="text-[11px] text-slate-500">Draw a selection box on the live slide image below</p>
-              </div>
-
-              {/* ACTUAL LIVE CURRENT SLIDE MIRROR CANVAS */}
-              <div
-                ref={zoomCanvasRef}
-                onTouchStart={handleTouchStartZoom}
-                onTouchMove={handleTouchMoveZoom}
-                onTouchEnd={handleTouchEndZoom}
-                onMouseDown={handleTouchStartZoom}
-                onMouseMove={handleTouchMoveZoom}
-                onMouseUp={handleTouchEndZoom}
-                className="relative w-full aspect-[16/9] bg-slate-900 rounded-2xl border-2 border-slate-300 shadow-xl overflow-hidden select-none flex items-center justify-center my-auto touch-none"
-              >
-                {currentSlideData.image ? (
-                  <img
-                    src={currentSlideData.image}
-                    alt="Live Current Slide"
-                    className="w-full h-full object-contain pointer-events-none"
-                  />
-                ) : (
-                  <div className="p-4 text-center text-white space-y-1">
-                    <div className="text-xs font-bold">{currentSlideData.title || `Slide ${currentSlide + 1}`}</div>
-                    <div className="text-[10px] text-slate-400">{currentSlideData.tagline || currentSlideData.notes}</div>
-                  </div>
-                )}
-
-                {/* Bounding Box Selection Highlight */}
-                {selectionBox && (
-                  <div
-                    className="absolute border-2 border-blue-600 bg-blue-500/25 rounded-lg bounding-box-active-light pointer-events-none"
-                    style={{
-                      left: `${Math.min(selectionBox.startX, selectionBox.endX)}%`,
-                      top: `${Math.min(selectionBox.startY, selectionBox.endY)}%`,
-                      width: `${Math.abs(selectionBox.endX - selectionBox.startX)}%`,
-                      height: `${Math.abs(selectionBox.endY - selectionBox.startY)}%`,
-                    }}
-                  >
-                    <span className="absolute -top-4 left-0 text-[8px] bg-blue-600 text-white px-1 rounded font-mono font-bold">
-                      Target Area
-                    </span>
-                  </div>
-                )}
-              </div>
-
+            <div className="flex space-x-2 pt-2">
               <button
-                onClick={handleEscReset}
-                className="w-full glass-button-danger p-2.5 text-xs font-bold flex items-center justify-center space-x-2 flex-shrink-0 active:scale-95"
+                onClick={handleResyncSession}
+                className="flex-1 glass-button-light py-2.5 text-xs font-bold flex items-center justify-center space-x-1.5"
               >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset Zoom (ESC)</span>
+                <RefreshCw className="w-3.5 h-3.5 text-blue-600" />
+                <span>Re-sync Session</span>
               </button>
-            </motion.div>
-          )}
 
-          {/* TAB 3: Visual Effects */}
-          {activeTab === 'effects' && (
-            <motion.div
-              key="effects-tab"
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              className="w-full h-full flex flex-col justify-between space-y-2 py-1"
-            >
-              <div className="text-center flex-shrink-0">
-                <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
-                  <Sliders className="w-4 h-4 text-purple-600" />
-                  <span>Real-Time Visual Effects</span>
-                </h3>
-              </div>
-
-              <div className="glass-card-light p-3 space-y-3 border border-slate-200 my-auto">
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-slate-700 font-medium">
-                    <span>Dynamic Blur</span>
-                    <span className="font-mono text-purple-600">{filters.blur}px</span>
+              <label className="flex-1 glass-button-primary py-2.5 text-xs font-bold flex items-center justify-center space-x-1.5 cursor-pointer shadow-sm">
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>Upload PDF</span>
+                <input type="file" accept=".pdf,image/*" onChange={handleMobilePdfUpload} className="hidden" />
+              </label>
+            </div>
+          </div>
+        ) : (
+          <AnimatePresence mode="wait">
+            {/* TAB 1: Navigation Control */}
+            {activeTab === 'nav' && (
+              <motion.div
+                key="nav-tab"
+                initial={{ opacity: 0, scale: 0.97 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.97 }}
+                className="w-full h-full flex flex-col justify-between space-y-2 py-1"
+              >
+                {/* Slide Counter Header */}
+                <div className="glass-card-light p-3 text-center space-y-1 border border-slate-200 shadow-sm flex-shrink-0">
+                  <div className="flex justify-between items-center text-[11px] text-slate-500 font-mono">
+                    <span>SLIDE {currentSlide + 1} OF {totalSlides}</span>
+                    <span className="text-blue-600 font-bold truncate max-w-[180px]">{slideDeck.title}</span>
                   </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="15"
-                    value={filters.blur}
-                    onChange={(e) => {
-                      const updated = { ...filters, blur: parseInt(e.target.value, 10) };
-                      setFilters(updated);
-                      if (socket) socket.emit('apply-filter', updated);
-                    }}
-                    className="w-full accent-purple-600 bg-slate-200 rounded-lg cursor-pointer"
-                  />
+                  <div className="text-sm font-extrabold text-[#1C1C1E] truncate">
+                    {currentSlideData.title || `Slide ${currentSlide + 1}`}
+                  </div>
+                  {isZoomed && (
+                    <div className="text-[10px] font-mono text-amber-700 bg-amber-500/20 px-2 py-0.5 rounded-full inline-block font-semibold">
+                      ● Dynamic Zoom Active
+                    </div>
+                  )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 pt-1">
+                {/* Large Tactile Prev/Next Buttons */}
+                <div className="grid grid-cols-2 gap-3 my-auto flex-1 items-center max-h-[45vh]">
                   <button
-                    onClick={() => {
-                      const updated = { ...filters, grayscale: !filters.grayscale };
-                      setFilters(updated);
-                      if (socket) socket.emit('apply-filter', updated);
-                    }}
-                    className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between active:scale-95 ${filters.grayscale ? 'bg-purple-500/20 border-purple-500' : ''}`}
+                    onClick={handlePrev}
+                    disabled={currentSlide === 0}
+                    className={`h-full min-h-[120px] max-h-[220px] glass-button-light flex flex-col items-center justify-center space-y-1 text-[#1C1C1E] border-2 border-white shadow-md active:scale-95 transition-transform ${currentSlide === 0 ? 'opacity-40 pointer-events-none' : 'hover:border-blue-500/30'}`}
                   >
-                    <span>Grayscale</span>
-                    <Moon className="w-3.5 h-3.5 text-purple-600" />
+                    <ChevronLeft className="w-12 h-12 text-blue-600" />
+                    <span className="text-xs font-extrabold uppercase tracking-wider">PREV</span>
                   </button>
 
                   <button
-                    onClick={() => {
-                      const updated = { ...filters, invert: !filters.invert };
-                      setFilters(updated);
-                      if (socket) socket.emit('apply-filter', updated);
-                    }}
-                    className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between active:scale-95 ${filters.invert ? 'bg-purple-500/20 border-purple-500' : ''}`}
+                    onClick={handleNext}
+                    disabled={currentSlide === totalSlides - 1}
+                    className={`h-full min-h-[120px] max-h-[220px] glass-button-primary flex flex-col items-center justify-center space-y-1 text-white border-2 border-white/40 shadow-md shadow-blue-500/30 active:scale-95 transition-transform ${currentSlide === totalSlides - 1 ? 'opacity-40 pointer-events-none' : ''}`}
                   >
-                    <span>Invert</span>
-                    <Sun className="w-3.5 h-3.5 text-amber-600" />
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      const next = !spotlightActive;
-                      setSpotlightActive(next);
-                      if (socket) socket.emit('toggle-spotlight', { active: next, x: 50, y: 50, radius: 160 });
-                    }}
-                    className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between active:scale-95 ${spotlightActive ? 'bg-blue-500/20 border-blue-500' : ''}`}
-                  >
-                    <span>Spotlight Focus</span>
-                    <Eye className="w-3.5 h-3.5 text-blue-600" />
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      const next = !blackoutActive;
-                      setBlackoutActive(next);
-                      if (socket) socket.emit('toggle-blackout');
-                    }}
-                    className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between active:scale-95 ${blackoutActive ? 'bg-rose-500/20 border-rose-500' : ''}`}
-                  >
-                    <span>Blackout Mode</span>
-                    <Power className="w-3.5 h-3.5 text-rose-600" />
+                    <ChevronRight className="w-12 h-12 text-white" />
+                    <span className="text-xs font-extrabold uppercase tracking-wider">NEXT</span>
                   </button>
                 </div>
-              </div>
 
-              <button
-                onClick={handleEscReset}
-                className="w-full glass-button-light p-2.5 text-xs font-bold text-slate-700 flex items-center justify-center space-x-2 flex-shrink-0 active:scale-95"
+                {/* Quick Actions Bar */}
+                <div className="grid grid-cols-3 gap-2 flex-shrink-0">
+                  <label className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 cursor-pointer font-bold active:scale-95">
+                    <UploadCloud className="w-4 h-4 text-blue-600" />
+                    <span>{isUploading ? 'Loading...' : 'Upload PDF'}</span>
+                    <input
+                      type="file"
+                      accept=".pdf,image/*"
+                      onChange={handleMobilePdfUpload}
+                      className="hidden"
+                    />
+                  </label>
+
+                  <button
+                    onClick={() => setActiveTab('zoom')}
+                    className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 font-bold active:scale-95"
+                  >
+                    <ZoomIn className="w-4 h-4 text-blue-600" />
+                    <span>Zoom Box</span>
+                  </button>
+
+                  <button
+                    onClick={triggerConfetti}
+                    className="glass-button-light p-2.5 flex flex-col items-center text-[11px] space-y-1 font-bold active:scale-95"
+                  >
+                    <Sparkles className="w-4 h-4 text-purple-600" />
+                    <span>Confetti</span>
+                  </button>
+                </div>
+              </motion.div>
+            )}
+
+            {/* TAB 2: Smart Drag-to-Zoom Live Mirroring Canvas */}
+            {activeTab === 'zoom' && (
+              <motion.div
+                key="zoom-tab"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                className="w-full h-full flex flex-col justify-between space-y-2 py-1"
               >
-                <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
-                <span>Reset Visual Effects</span>
-              </button>
-            </motion.div>
-          )}
-
-          {/* TAB 4: Laser Pointer Trackpad */}
-          {activeTab === 'laser' && (
-            <motion.div
-              key="laser-tab"
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              className="w-full h-full flex flex-col justify-between space-y-2 py-1"
-            >
-              <div className="text-center flex-shrink-0">
-                <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
-                  <MousePointer className="w-4 h-4 text-red-500" />
-                  <span>Laser Trackpad</span>
-                </h3>
-              </div>
-
-              <div
-                ref={laserTrackpadRef}
-                onTouchMove={handleLaserTouchMove}
-                onTouchEnd={handleLaserTouchEnd}
-                onMouseMove={handleLaserTouchMove}
-                onMouseLeave={handleLaserTouchEnd}
-                className="w-full aspect-[16/9] glass-card-light bg-slate-100 border-2 border-red-500/40 rounded-2xl flex flex-col items-center justify-center relative select-none overflow-hidden shadow-inner my-auto touch-none"
-              >
-                <div className="w-10 h-10 rounded-full bg-red-500/20 border border-red-500 flex items-center justify-center animate-ping" />
-                <span className="text-[11px] font-mono text-red-600 mt-2 tracking-wider uppercase font-bold">
-                  [ DRAG FINGER TO MOVE LASER ]
-                </span>
-              </div>
-            </motion.div>
-          )}
-
-          {/* TAB 5: Confidential Speaker Notes */}
-          {activeTab === 'notes' && (
-            <motion.div
-              key="notes-tab"
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              className="w-full h-full flex flex-col justify-between space-y-2 py-1"
-            >
-              <div className="text-center flex-shrink-0">
-                <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
-                  <FileText className="w-4 h-4 text-emerald-600" />
-                  <span>Speaker Notes</span>
-                </h3>
-              </div>
-
-              <div className="glass-card-light p-4 space-y-2 flex-1 overflow-y-auto max-h-[45vh] border border-slate-200 my-auto">
-                <div className="text-xs font-bold text-emerald-600 uppercase tracking-wider font-mono">
-                  Slide {currentSlide + 1} Notes:
+                <div className="text-center flex-shrink-0">
+                  <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
+                    <ZoomIn className="w-4 h-4 text-blue-600" />
+                    <span>Smart Drag-to-Zoom</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500">Draw a selection box on the live slide image below</p>
                 </div>
-                <p className="text-xs text-slate-700 leading-relaxed font-normal">
-                  {currentSlideData.notes || 'No confidential speaker notes added for this slide. You can add notes from the My Files dashboard.'}
-                </p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+
+                {/* ACTUAL LIVE CURRENT SLIDE MIRROR CANVAS */}
+                <div
+                  ref={zoomCanvasRef}
+                  onTouchStart={handleTouchStartZoom}
+                  onTouchMove={handleTouchMoveZoom}
+                  onTouchEnd={handleTouchEndZoom}
+                  onMouseDown={handleTouchStartZoom}
+                  onMouseMove={handleTouchMoveZoom}
+                  onMouseUp={handleTouchEndZoom}
+                  className="relative w-full aspect-[16/9] bg-slate-900 rounded-2xl border-2 border-slate-300 shadow-xl overflow-hidden select-none flex items-center justify-center my-auto touch-none"
+                >
+                  {currentSlideData.image ? (
+                    <img
+                      src={currentSlideData.image}
+                      alt="Live Current Slide"
+                      className="w-full h-full object-contain pointer-events-none"
+                    />
+                  ) : (
+                    <div className="p-4 text-center text-white space-y-1">
+                      <div className="text-xs font-bold">{currentSlideData.title || `Slide ${currentSlide + 1}`}</div>
+                      <div className="text-[10px] text-slate-400">{currentSlideData.tagline || currentSlideData.notes}</div>
+                    </div>
+                  )}
+
+                  {/* Bounding Box Selection Highlight */}
+                  {selectionBox && (
+                    <div
+                      className="absolute border-2 border-blue-600 bg-blue-500/25 rounded-lg bounding-box-active-light pointer-events-none"
+                      style={{
+                        left: `${Math.min(selectionBox.startX, selectionBox.endX)}%`,
+                        top: `${Math.min(selectionBox.startY, selectionBox.endY)}%`,
+                        width: `${Math.abs(selectionBox.endX - selectionBox.startX)}%`,
+                        height: `${Math.abs(selectionBox.endY - selectionBox.startY)}%`,
+                      }}
+                    >
+                      <span className="absolute -top-4 left-0 text-[8px] bg-blue-600 text-white px-1 rounded font-mono font-bold">
+                        Target Area
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={handleEscReset}
+                  className="w-full glass-button-danger p-2.5 text-xs font-bold flex items-center justify-center space-x-2 flex-shrink-0 active:scale-95"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset Zoom (ESC)</span>
+                </button>
+              </motion.div>
+            )}
+
+            {/* TAB 3: Visual Effects */}
+            {activeTab === 'effects' && (
+              <motion.div
+                key="effects-tab"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                className="w-full h-full flex flex-col justify-between space-y-2 py-1"
+              >
+                <div className="text-center flex-shrink-0">
+                  <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
+                    <Sliders className="w-4 h-4 text-purple-600" />
+                    <span>Real-Time Visual Effects</span>
+                  </h3>
+                </div>
+
+                <div className="glass-card-light p-3 space-y-3 border border-slate-200 my-auto">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-700 font-medium">
+                      <span>Dynamic Blur</span>
+                      <span className="font-mono text-purple-600">{filters.blur}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="15"
+                      value={filters.blur}
+                      onChange={(e) => {
+                        const updated = { ...filters, blur: parseInt(e.target.value, 10) };
+                        setFilters(updated);
+                        if (socket) socket.emit('apply-filter', updated);
+                      }}
+                      className="w-full accent-purple-600 bg-slate-200 rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      onClick={() => {
+                        const updated = { ...filters, grayscale: !filters.grayscale };
+                        setFilters(updated);
+                        if (socket) socket.emit('apply-filter', updated);
+                      }}
+                      className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between active:scale-95 ${filters.grayscale ? 'bg-purple-500/20 border-purple-500' : ''}`}
+                    >
+                      <span>Grayscale</span>
+                      <Moon className="w-3.5 h-3.5 text-purple-600" />
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const updated = { ...filters, invert: !filters.invert };
+                        setFilters(updated);
+                        if (socket) socket.emit('apply-filter', updated);
+                      }}
+                      className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between active:scale-95 ${filters.invert ? 'bg-purple-500/20 border-purple-500' : ''}`}
+                    >
+                      <span>Invert</span>
+                      <Sun className="w-3.5 h-3.5 text-amber-600" />
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const next = !spotlightActive;
+                        setSpotlightActive(next);
+                        if (socket) socket.emit('toggle-spotlight', { active: next, x: 50, y: 50, radius: 160 });
+                      }}
+                      className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between active:scale-95 ${spotlightActive ? 'bg-blue-500/20 border-blue-500' : ''}`}
+                    >
+                      <span>Spotlight Focus</span>
+                      <Eye className="w-3.5 h-3.5 text-blue-600" />
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const next = !blackoutActive;
+                        setBlackoutActive(next);
+                        if (socket) socket.emit('toggle-blackout');
+                      }}
+                      className={`glass-button-light p-2.5 text-xs font-medium flex items-center justify-between active:scale-95 ${blackoutActive ? 'bg-rose-500/20 border-rose-500' : ''}`}
+                    >
+                      <span>Blackout Mode</span>
+                      <Power className="w-3.5 h-3.5 text-rose-600" />
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleEscReset}
+                  className="w-full glass-button-light p-2.5 text-xs font-bold text-slate-700 flex items-center justify-center space-x-2 flex-shrink-0 active:scale-95"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Reset Visual Effects</span>
+                </button>
+              </motion.div>
+            )}
+
+            {/* TAB 4: Laser Pointer Trackpad */}
+            {activeTab === 'laser' && (
+              <motion.div
+                key="laser-tab"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                className="w-full h-full flex flex-col justify-between space-y-2 py-1"
+              >
+                <div className="text-center flex-shrink-0">
+                  <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
+                    <MousePointer className="w-4 h-4 text-red-500" />
+                    <span>Laser Trackpad</span>
+                  </h3>
+                </div>
+
+                <div
+                  ref={laserTrackpadRef}
+                  onTouchMove={handleLaserTouchMove}
+                  onTouchEnd={handleLaserTouchEnd}
+                  onMouseMove={handleLaserTouchMove}
+                  onMouseLeave={handleLaserTouchEnd}
+                  className="w-full aspect-[16/9] glass-card-light bg-slate-100 border-2 border-red-500/40 rounded-2xl flex flex-col items-center justify-center relative select-none overflow-hidden shadow-inner my-auto touch-none"
+                >
+                  <div className="w-10 h-10 rounded-full bg-red-500/20 border border-red-500 flex items-center justify-center animate-ping" />
+                  <span className="text-[11px] font-mono text-red-600 mt-2 tracking-wider uppercase font-bold">
+                    [ DRAG FINGER TO MOVE LASER ]
+                  </span>
+                </div>
+              </motion.div>
+            )}
+
+            {/* TAB 5: Confidential Speaker Notes */}
+            {activeTab === 'notes' && (
+              <motion.div
+                key="notes-tab"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                className="w-full h-full flex flex-col justify-between space-y-2 py-1"
+              >
+                <div className="text-center flex-shrink-0">
+                  <h3 className="text-sm font-bold text-[#1C1C1E] flex items-center justify-center space-x-1.5">
+                    <FileText className="w-4 h-4 text-emerald-600" />
+                    <span>Speaker Notes</span>
+                  </h3>
+                </div>
+
+                <div className="glass-card-light p-4 space-y-2 flex-1 overflow-y-auto max-h-[45vh] border border-slate-200 my-auto">
+                  <div className="text-xs font-bold text-emerald-600 uppercase tracking-wider font-mono">
+                    Slide {currentSlide + 1} Notes:
+                  </div>
+                  <p className="text-xs text-slate-700 leading-relaxed font-normal">
+                    {currentSlideData.notes || 'No confidential speaker notes added for this slide. You can add notes from the My Files dashboard.'}
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        )}
       </div>
 
       {/* Bottom iOS Liquid Glass Floating Dock - ALWAYS PINNED ON VISIBLE SCREEN */}
@@ -686,7 +734,7 @@ export default function RemotePage() {
 
           <button
             onClick={() => { triggerHaptic(); setActiveTab('notes'); }}
-            className={`p-2.5 rounded-2xl flex flex-col items-center text-[9px] space-y-0.5 transition-all active:scale-95 ${activeTab === 'notes' ? 'bg-emerald-500/15 text-emerald-600 font-bold border border-emerald-500/30' : 'text-slate-500'}`}
+            className={`p-2.5 rounded-2xl flex flex-col items-center text-[9px] space-y-0.5 transition-all active:scale-95 ${activeTab === 'notes' ? 'bg-emerald-500/15 text-emerald-600 font-bold border border-blue-500/30' : 'text-slate-500'}`}
           >
             <FileText className="w-4 h-4" />
             <span>Notes</span>

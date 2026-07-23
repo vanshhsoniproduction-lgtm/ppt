@@ -19,12 +19,19 @@ export async function processPdfFile(file, username, progressCallback) {
         }
 
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2.0 }); // High clarity 2x scale
+        // Calculate optimal scale for max 1920px width for fast socket transmission
+        const unscaledViewport = page.getViewport({ scale: 1.0 });
+        const scale = Math.min(2.0, 1920 / unscaledViewport.width);
+        const viewport = page.getViewport({ scale });
 
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
         canvas.height = viewport.height;
         canvas.width = viewport.width;
+
+        // Fill white background for PDF rendering
+        context.fillStyle = '#FFFFFF';
+        context.fillRect(0, 0, canvas.width, canvas.height);
 
         const renderContext = {
           canvasContext: context,
@@ -32,7 +39,8 @@ export async function processPdfFile(file, username, progressCallback) {
         };
 
         await page.render(renderContext).promise;
-        const imageUrl = canvas.toDataURL('image/png');
+        // Compress canvas to JPEG 0.82 quality (90% smaller size for instant socket sync)
+        const imageUrl = canvas.toDataURL('image/jpeg', 0.82);
 
         slides.push({
           id: i,
@@ -40,7 +48,7 @@ export async function processPdfFile(file, username, progressCallback) {
           title: `Slide ${i}`,
           category: 'PDF PRESENTATION',
           image: imageUrl,
-          notes: `Speaker notes for slide ${i}. Click 'Edit Notes' to add your custom points.`,
+          notes: `Speaker notes for slide ${i}. Click 'Edit Notes' on your dashboard to customize.`,
         });
       }
 
@@ -69,14 +77,25 @@ export function processImageFiles(files, username) {
     let processed = 0;
 
     Array.from(files).forEach((file, index) => {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+
+      img.onload = async () => {
+        const canvas = document.createElement('canvas');
+        const scale = Math.min(1.0, 1920 / img.width);
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const imageUrl = canvas.toDataURL('image/jpeg', 0.82);
+
         slides.push({
           id: index + 1,
           type: 'image-slide',
           title: file.name.replace(/\.[^/.]+$/, ""),
           category: 'IMAGE SLIDE',
-          image: e.target.result,
+          image: imageUrl,
           notes: `Speaker notes for slide ${index + 1}.`,
         });
         processed++;
@@ -97,7 +116,7 @@ export function processImageFiles(files, username) {
           resolve(deck);
         }
       };
-      reader.readAsDataURL(file);
+      img.src = url;
     });
   });
 }

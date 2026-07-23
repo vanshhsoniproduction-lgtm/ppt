@@ -16,11 +16,8 @@ import {
   ArrowRight,
   LogOut,
   Calendar,
-  Layers,
   X,
-  Save,
-  CheckCircle2,
-  Clock
+  CheckCircle2
 } from 'lucide-react';
 import { processPdfFile, processImageFiles } from '../utils/pdfProcessor';
 import { getUserDecksFromDB, deleteDeckFromDB, updateSlideNoteInDB } from '../utils/db';
@@ -35,7 +32,7 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
 
-  // Slide Notes Modal State
+  // Modals
   const [editingDeck, setEditingDeck] = useState(null);
   const [previewDeck, setPreviewDeck] = useState(null);
 
@@ -62,13 +59,15 @@ export default function Home() {
     }
   };
 
+  // DYNAMIC QR CODE URL GENERATION
   useEffect(() => {
     if (typeof window !== 'undefined' && isLoggedIn && username) {
       const origin = window.location.origin;
       const room = username.toUpperCase() + '-ROOM';
-      setRemoteUrl(`${origin}/remote?room=${room}&user=${username}`);
+      const deckParam = activeDeck ? `&deck=${activeDeck.id}` : '';
+      setRemoteUrl(`${origin}/remote?room=${room}&user=${username}${deckParam}`);
     }
-  }, [username, isLoggedIn]);
+  }, [username, isLoggedIn, activeDeck]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -102,7 +101,7 @@ export default function Home() {
 
       if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
         newDeck = await processPdfFile(file, username, (p, t) => {
-          setUploadProgress(`Rendering page ${p} of ${t}...`);
+          setUploadProgress(`Optimizing page ${p} of ${t}...`);
         });
       } else {
         newDeck = await processImageFiles(files, username);
@@ -111,7 +110,7 @@ export default function Home() {
       if (newDeck) {
         setActiveDeck(newDeck);
         await loadUserDecks(username);
-        setUploadProgress(`Successfully saved "${newDeck.title}"!`);
+        setUploadProgress(`Successfully loaded "${newDeck.title}"!`);
       }
     } catch (err) {
       console.error(err);
@@ -142,7 +141,6 @@ export default function Home() {
     }
   };
 
-  // Group decks by date (Today, Yesterday, Earlier)
   const groupDecksByDate = (decks) => {
     const groups = { Today: [], Yesterday: [], Earlier: [] };
     const today = new Date().toDateString();
@@ -423,7 +421,7 @@ export default function Home() {
                   )}
 
                   <Link
-                    href={`/remote?room=${activeRoom}&user=${username}`}
+                    href={`/remote?room=${activeRoom}&user=${username}${activeDeck ? `&deck=${activeDeck.id}` : ''}`}
                     className="w-full glass-button-light p-3 text-center font-bold text-[#1C1C1E] flex items-center justify-center space-x-2 text-xs"
                   >
                     <Smartphone className="w-4 h-4 text-blue-600" />
