@@ -59,8 +59,8 @@ export default function ControlPage() {
 
   const zoomCanvasRef = useRef(null);
   const panTimeoutRef = useRef(null);
+  const emitTimeoutRef = useRef(null);
   const rafRef = useRef(null);
-  const lastEmitRef = useRef(0);
 
   // Laser
   const laserTrackpadRef = useRef(null);
@@ -136,6 +136,7 @@ export default function ControlPage() {
       setSelectionBox(null);
       setIsPanReady(false);
       if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
+      if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
     });
 
     newSocket.on('zoom-updated', (data) => {
@@ -156,6 +157,7 @@ export default function ControlPage() {
       setSpotlightActive(false);
       setIsPanReady(false);
       if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
+      if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
     });
 
     newSocket.on('filter-updated', (data) => setFilters(data.filters));
@@ -203,10 +205,11 @@ export default function ControlPage() {
     setSpotlightActive(false);
     setIsPanReady(false);
     if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
+    if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── EASY SMALL-BOX MOVEMENT & DRAG SELECTION WITH NO JITTER ──
+  // ── NO LIVE DRAGGING BROADCAST — ANIMATED ZOOM APPLIES 0.1s AFTER RELEASE ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -222,7 +225,7 @@ export default function ControlPage() {
     triggerHaptic();
     const c = getCanvasCoords(e);
 
-    // EASY SMALL-BOX MOVEMENT: Once 0.5s has elapsed AND a box exists, ANY touch on canvas allows shifting!
+    // MODE A: Shift/Pan existing box (If 0.5s has elapsed AND box exists)
     if (isPanReady && selectionBox) {
       setIsDraggingBox(true);
       setDragAnchor({
@@ -234,8 +237,9 @@ export default function ControlPage() {
       return;
     }
 
-    // Otherwise: Start drawing a new box
+    // MODE B: Draw new shape locally on mobile (no socket emit while drawing!)
     if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
+    if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
     setIsPanReady(false);
     setIsDrawing(true);
     setDragAnchor({ startX: c.pctX, startY: c.pctY, initialBoxX: c.pctX, initialBoxY: c.pctY });
@@ -243,11 +247,10 @@ export default function ControlPage() {
 
   const onZoomMove = (e) => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
-
     const c = getCanvasCoords(e);
 
     rafRef.current = requestAnimationFrame(() => {
-      // MODE A: Smooth Pan/Shift existing zoomed box in ANY direction
+      // MODE A: Shift/Pan existing box locally on mobile
       if (isDraggingBox && selectionBox) {
         const deltaX = c.pctX - dragAnchor.startX;
         const deltaY = c.pctY - dragAnchor.startY;
@@ -257,26 +260,14 @@ export default function ControlPage() {
 
         const updatedBox = { ...selectionBox, startX: newStartX, startY: newStartY };
         setSelectionBox(updatedBox);
-
-        // Throttle Socket Emits at 30fps to avoid jitter/lag
-        const now = Date.now();
-        if (socket && now - lastEmitRef.current > 33) {
-          lastEmitRef.current = now;
-          socket.emit('zoom-area', {
-            x: newStartX,
-            y: newStartY,
-            width: selectionBox.width,
-            height: selectionBox.height,
-          });
-        }
         return;
       }
 
-      // MODE B: Draw new shape ONLY WHEN DRAGGING LEFT TO RIGHT (c.pctX > dragAnchor.startX)
+      // MODE B: Draw new 16:9 box locally on mobile (ONLY Left-to-Right →)
       if (isDrawing) {
         if (c.pctX <= dragAnchor.startX) return;
 
-        const width = Math.max(8, c.pctX - dragAnchor.startX);
+        const width = Math.max(10, c.pctX - dragAnchor.startX);
         const height = width / (16 / 9); // Strict 16:9 Ratio
 
         const startX = dragAnchor.startX;
@@ -284,17 +275,6 @@ export default function ControlPage() {
 
         const updatedBox = { startX, startY, width, height };
         setSelectionBox(updatedBox);
-
-        const now = Date.now();
-        if (socket && now - lastEmitRef.current > 33) {
-          lastEmitRef.current = now;
-          socket.emit('zoom-area', {
-            x: updatedBox.startX,
-            y: updatedBox.startY,
-            width: updatedBox.width,
-            height: updatedBox.height,
-          });
-        }
       }
     });
   };
@@ -309,14 +289,19 @@ export default function ControlPage() {
 
       if (selectionBox) {
         setIsZoomed(true);
-        if (socket) {
-          socket.emit('zoom-area', {
-            x: selectionBox.startX,
-            y: selectionBox.startY,
-            width: selectionBox.width,
-            height: selectionBox.height,
-          });
-        }
+
+        // Emit zoom event 0.1 SECONDS (100ms) AFTER DRAG ENDS for smooth animated zoom-in!
+        if (emitTimeoutRef.current) clearTimeout(emitTimeoutRef.current);
+        emitTimeoutRef.current = setTimeout(() => {
+          if (socket) {
+            socket.emit('zoom-area', {
+              x: selectionBox.startX,
+              y: selectionBox.startY,
+              width: selectionBox.width,
+              height: selectionBox.height,
+            });
+          }
+        }, 100);
 
         // Enable Move/Pan mode AFTER 0.5 Seconds (500ms delay)
         if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
@@ -342,7 +327,7 @@ export default function ControlPage() {
     if (socket) socket.emit('laser-move', { active: false, x: 50, y: 50 });
   };
 
-  // ── Confetti ──
+  // ── Confetti Particle Celebration ──
   const triggerConfetti = () => {
     triggerHaptic();
     if (socket) socket.emit('trigger-confetti');
@@ -417,10 +402,10 @@ export default function ControlPage() {
             {/* Quick Actions */}
             <div className="grid grid-cols-2 landscape:flex landscape:flex-col gap-2">
               <button onClick={handleReset} className="dc-btn dc-btn-secondary text-xs py-2.5 landscape:py-1.5 w-full">
-                <RotateCcw className="w-3.5 h-3.5" /> Reset
+                <RotateCcw className="w-3.5 h-3.5" /> Reset (ESC)
               </button>
-              <button onClick={triggerConfetti} className="dc-btn dc-btn-secondary text-xs py-2.5 landscape:py-1.5 w-full">
-                <Sparkles className="w-3.5 h-3.5 text-purple-500" /> Confetti
+              <button onClick={triggerConfetti} className="dc-btn dc-btn-secondary text-xs py-2.5 landscape:py-1.5 w-full" title="Trigger Party Celebration Confetti on Host Screen">
+                <Sparkles className="w-3.5 h-3.5 text-purple-500" /> Confetti 🎉
               </button>
             </div>
           </motion.div>
@@ -432,10 +417,10 @@ export default function ControlPage() {
             className="flex-1 flex flex-col justify-between gap-2 py-2 landscape:py-1">
             <div className="text-center flex-shrink-0">
               <h3 className="text-xs font-bold flex items-center justify-center gap-1.5">
-                <ZoomIn className="w-3.5 h-3.5 text-[var(--dc-blue)]" /> Left-to-Right Drag & Shift Zoom
+                <ZoomIn className="w-3.5 h-3.5 text-[var(--dc-blue)]" /> 16:9 Drag & Zoom
               </h3>
               <p className="text-[10px] text-[var(--dc-text-secondary)]">
-                Drag (→) to select • Touch ANYWHERE on canvas after 0.5s to shift live!
+                Drag (→) to select • Animated zoom applies 0.1s after releasing!
               </p>
             </div>
 
@@ -472,7 +457,7 @@ export default function ControlPage() {
             </div>
 
             <button onClick={handleReset} className="dc-btn dc-btn-danger w-full text-xs py-2 landscape:py-1 flex-shrink-0">
-              <RotateCcw className="w-3.5 h-3.5" /> Reset Zoom
+              <RotateCcw className="w-3.5 h-3.5" /> Reset Zoom (ESC)
             </button>
           </motion.div>
         );
@@ -621,7 +606,7 @@ export default function ControlPage() {
         </AnimatePresence>
       </div>
 
-      {/* Bottom Dock (Landscape & Portrait Responsive) */}
+      {/* Bottom Dock */}
       <div className="px-3 pb-3 pt-1 landscape:pb-1 z-30 flex-shrink-0 dc-safe-bottom">
         <div className="dc-dock max-w-md mx-auto px-2 py-1 flex justify-around items-center">
           {tabs.map(tab => (

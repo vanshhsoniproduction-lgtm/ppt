@@ -188,7 +188,7 @@ export default function HostScreen() {
     setSessionActive(false);
   };
 
-  // MATHEMATICALLY EXACT 100% UN-CROPPED 16:9 ZOOM TRANSFORM WITH HARDWARE ACCELERATED GPU COMPOSITING
+  // MATHEMATICALLY EXACT 100% UN-CROPPED 16:9 ZOOM TRANSFORM WITH SMOOTH ANIMATED ZOOM-IN & ZOOM-OUT
   const calcZoom = () => {
     if (!isZoomed || !zoomCoords) {
       return { scale: 1, x: 0, y: 0 };
@@ -298,14 +298,25 @@ export default function HostScreen() {
         )}
       </AnimatePresence>
 
-      {/* Main 16:9 Presentation Canvas with GPU Hardware-Accelerated Smooth Translation (No Jitter) */}
+      {/* Main 16:9 Presentation Canvas with Silky-Smooth Animated Zoom-In & Zoom-Out */}
       <div className="w-full h-full relative flex items-center justify-center overflow-hidden">
-        <div
-          className="w-full h-full relative flex items-center justify-center transition-transform duration-150 ease-out"
+        <motion.div
+          className="w-full h-full relative flex items-center justify-center"
+          animate={{
+            scale: zoom.scale,
+            x: `${zoom.x}%`,
+            y: `${zoom.y}%`,
+          }}
+          transition={{
+            type: 'spring',
+            stiffness: 220,
+            damping: 26,
+            mass: 0.8,
+          }}
           style={{
-            transform: `translate3d(${zoom.x}%, ${zoom.y}%, 0) scale(${zoom.scale})`,
-            transformOrigin: '50% 50%',
             filter: cssFilter,
+            transformStyle: 'preserve-3d',
+            transformOrigin: '50% 50%',
             willChange: 'transform',
           }}
         >
@@ -333,7 +344,7 @@ export default function HostScreen() {
               />
             </motion.div>
           </AnimatePresence>
-        </div>
+        </motion.div>
       </div>
 
       {/* Spotlight Overlay */}
