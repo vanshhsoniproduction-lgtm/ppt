@@ -50,12 +50,15 @@ export default function ControlPage() {
   const [spotlightActive, setSpotlightActive] = useState(false);
   const [blackoutActive, setBlackoutActive] = useState(false);
 
-  // 16:9 Right-to-Left Drag Selection & Live Box Shifting/Panning State
+  // 16:9 Left-to-Right Drag Selection & Delayed (0.5s) Box Shifting State
   const [isDrawing, setIsDrawing] = useState(false);
   const [isDraggingBox, setIsDraggingBox] = useState(false);
+  const [isPanReady, setIsPanReady] = useState(false); // Enabled 0.5s after releasing drag
   const [dragAnchor, setDragAnchor] = useState({ startX: 0, startY: 0, initialBoxX: 0, initialBoxY: 0 });
   const [selectionBox, setSelectionBox] = useState(null);
   const zoomCanvasRef = useRef(null);
+  const panTimeoutRef = useRef(null);
+  const lastEmitTimeRef = useRef(0);
 
   // Laser
   const laserTrackpadRef = useRef(null);
@@ -115,6 +118,7 @@ export default function ControlPage() {
           width: state.zoomCoords.width,
           height: state.zoomCoords.height,
         });
+        setIsPanReady(true);
       }
     });
 
@@ -128,6 +132,8 @@ export default function ControlPage() {
       setTotalSlides(data.totalSlides);
       setIsZoomed(false);
       setSelectionBox(null);
+      setIsPanReady(false);
+      if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
     });
 
     newSocket.on('zoom-updated', (data) => {
@@ -146,6 +152,8 @@ export default function ControlPage() {
       setIsZoomed(false);
       setSelectionBox(null);
       setSpotlightActive(false);
+      setIsPanReady(false);
+      if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
     });
 
     newSocket.on('filter-updated', (data) => setFilters(data.filters));
@@ -191,10 +199,12 @@ export default function ControlPage() {
     setIsZoomed(false);
     setSelectionBox(null);
     setSpotlightActive(false);
+    setIsPanReady(false);
+    if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── RIGHT-TO-LEFT ONLY DRAG SELECTION & LIVE BOX SHIFTING/PANNING ──
+  // ── LEFT-TO-RIGHT ONLY DRAG SELECTION & 0.5s DELAYED BOX PANNING ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -210,8 +220,8 @@ export default function ControlPage() {
     triggerHaptic();
     const c = getCanvasCoords(e);
 
-    // Check if touch point falls INSIDE an existing active selection box for panning
-    if (selectionBox) {
+    // MODE A: If 0.5s has elapsed AND selectionBox exists AND touch is INSIDE box -> Shift/Pan Mode
+    if (isPanReady && selectionBox) {
       const insideX = c.pctX >= selectionBox.startX && c.pctX <= selectionBox.startX + selectionBox.width;
       const insideY = c.pctY >= selectionBox.startY && c.pctY <= selectionBox.startY + selectionBox.height;
 
@@ -227,7 +237,9 @@ export default function ControlPage() {
       }
     }
 
-    // Otherwise: Start drawing a new box ONLY when dragging Right to Left
+    // MODE B: Otherwise -> Draw new shape (Clear previous pan state)
+    if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
+    setIsPanReady(false);
     setIsDrawing(true);
     setDragAnchor({ startX: c.pctX, startY: c.pctY, initialBoxX: c.pctX, initialBoxY: c.pctY });
   };
@@ -235,7 +247,7 @@ export default function ControlPage() {
   const onZoomMove = (e) => {
     const c = getCanvasCoords(e);
 
-    // MODE 1: Pan/Shift existing zoomed box in ANY direction (Live real-time screen shift)
+    // MODE A: Shift / Pan existing box
     if (isDraggingBox && selectionBox) {
       const deltaX = c.pctX - dragAnchor.startX;
       const deltaY = c.pctY - dragAnchor.startY;
@@ -246,8 +258,10 @@ export default function ControlPage() {
       const updatedBox = { ...selectionBox, startX: newStartX, startY: newStartY };
       setSelectionBox(updatedBox);
 
-      // Broadcast live screen shift to Host Screen
-      if (socket) {
+      // Throttled socket broadcast to eliminate lag and overlapping (max 25fps)
+      const now = Date.now();
+      if (socket && now - lastEmitTimeRef.current > 40) {
+        lastEmitTimeRef.current = now;
         socket.emit('zoom-area', {
           x: newStartX,
           y: newStartY,
@@ -258,33 +272,33 @@ export default function ControlPage() {
       return;
     }
 
-    // MODE 2: Draw a new 16:9 box ONLY when dragging RIGHT TO LEFT (c.pctX < dragAnchor.startX)
+    // MODE B: Draw new shape ONLY WHEN DRAGGING LEFT TO RIGHT (c.pctX > dragAnchor.startX)
     if (isDrawing) {
-      // Ignore left-to-right drags
-      if (c.pctX >= dragAnchor.startX) {
+      // Ignore right-to-left drags
+      if (c.pctX <= dragAnchor.startX) {
         return;
       }
 
-      // Dragging Right to Left
-      const minX = c.pctX;
-      const maxX = dragAnchor.startX;
-      const rawW = Math.max(10, maxX - minX);
-      const height = rawW / (16 / 9); // Strict 16:9 Ratio
+      // Dragging Left to Right
+      const width = Math.max(10, c.pctX - dragAnchor.startX);
+      const height = width / (16 / 9); // Strict 16:9 Ratio
 
-      // Center vertically relative to drag anchor Y
-      const startY = Math.min(100 - height, Math.max(0, dragAnchor.startY - height / 2));
+      const startX = dragAnchor.startX;
+      const startY = Math.min(100 - height, Math.max(0, dragAnchor.startY));
 
       const updatedBox = {
-        startX: minX,
+        startX,
         startY,
-        width: rawW,
+        width,
         height,
       };
 
       setSelectionBox(updatedBox);
 
-      // Broadcast live box zoom to Host Screen
-      if (socket) {
+      // Throttled socket broadcast
+      const now = Date.now();
+      if (socket && now - lastEmitTimeRef.current > 40) {
+        lastEmitTimeRef.current = now;
         socket.emit('zoom-area', {
           x: updatedBox.startX,
           y: updatedBox.startY,
@@ -303,6 +317,7 @@ export default function ControlPage() {
 
       if (selectionBox) {
         setIsZoomed(true);
+        // Final exact socket broadcast
         if (socket) {
           socket.emit('zoom-area', {
             x: selectionBox.startX,
@@ -311,6 +326,12 @@ export default function ControlPage() {
             height: selectionBox.height,
           });
         }
+
+        // Enable Move/Pan mode AFTER 0.5 Seconds (500ms delay)
+        if (panTimeoutRef.current) clearTimeout(panTimeoutRef.current);
+        panTimeoutRef.current = setTimeout(() => {
+          setIsPanReady(true);
+        }, 500);
       }
     }
   };
@@ -419,10 +440,10 @@ export default function ControlPage() {
             className="flex-1 flex flex-col justify-between gap-3 py-2">
             <div className="text-center">
               <h3 className="text-sm font-bold flex items-center justify-center gap-1.5">
-                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> Right-to-Left Drag & Shift Zoom
+                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> Left-to-Right Drag Zoom
               </h3>
               <p className="text-[11px] text-[var(--dc-text-secondary)]">
-                Drag Right-to-Left (←) to select box • Touch INSIDE box to shift live!
+                Drag Left-to-Right (→) to select • Move mode enables 0.5s after release
               </p>
             </div>
 
@@ -432,7 +453,7 @@ export default function ControlPage() {
               className="relative w-full aspect-[16/9] bg-black rounded-2xl border border-[var(--dc-border)] shadow-lg overflow-hidden select-none flex items-center justify-center my-auto touch-none cursor-crosshair">
               {slideImgSrc && <img src={slideImgSrc} alt="Current slide" className="w-full h-full object-contain pointer-events-none" />}
 
-              {/* Active Selection Box with Live Shift/Pan Handle Indicator */}
+              {/* Active Selection Box with Delayed Move Indicator */}
               {selectionBox && (
                 <div className="absolute border-2 border-[var(--dc-blue)] bg-blue-500/20 rounded-lg dc-zoom-selection cursor-move"
                   style={{
@@ -442,11 +463,20 @@ export default function ControlPage() {
                     height: `${selectionBox.height}%`,
                   }}
                 >
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--dc-blue)]/80 text-white p-1 rounded-full shadow-md">
-                    <Move className="w-3 h-3 animate-pulse" />
-                  </div>
+                  <AnimatePresence>
+                    {isPanReady && (
+                      <motion.div
+                        initial={{ scale: 0, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        exit={{ scale: 0, opacity: 0 }}
+                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--dc-blue)] text-white p-1.5 rounded-full shadow-lg"
+                      >
+                        <Move className="w-3.5 h-3.5 animate-pulse" />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                   <span className="absolute -top-3.5 left-0 text-[8px] bg-[var(--dc-blue)] text-white px-1 rounded font-mono font-bold flex items-center gap-0.5">
-                    16:9 Target (Drag inside to shift)
+                    16:9 Target {isPanReady ? '(Move Ready)' : ''}
                   </span>
                 </div>
               )}
