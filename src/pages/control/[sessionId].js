@@ -50,7 +50,7 @@ export default function ControlPage() {
   const [spotlightActive, setSpotlightActive] = useState(false);
   const [blackoutActive, setBlackoutActive] = useState(false);
 
-  // 16:9 Bi-directional Zoom Selection & Live Box Shifting/Panning State
+  // 16:9 Right-to-Left Drag Selection & Live Box Shifting/Panning State
   const [isDrawing, setIsDrawing] = useState(false);
   const [isDraggingBox, setIsDraggingBox] = useState(false);
   const [dragAnchor, setDragAnchor] = useState({ startX: 0, startY: 0, initialBoxX: 0, initialBoxY: 0 });
@@ -194,7 +194,7 @@ export default function ControlPage() {
     if (socket) { socket.emit('reset-zoom'); socket.emit('reset-filters'); }
   };
 
-  // ── BI-DIRECTIONAL DRAG & LIVE SHIFT/PANNING ZOOM SELECTION ──
+  // ── RIGHT-TO-LEFT ONLY DRAG SELECTION & LIVE BOX SHIFTING/PANNING ──
   const getCanvasCoords = (e) => {
     if (!zoomCanvasRef.current) return { pctX: 0, pctY: 0 };
     const rect = zoomCanvasRef.current.getBoundingClientRect();
@@ -227,17 +227,9 @@ export default function ControlPage() {
       }
     }
 
-    // Otherwise: Start drawing a new bi-directional box
+    // Otherwise: Start drawing a new box ONLY when dragging Right to Left
     setIsDrawing(true);
     setDragAnchor({ startX: c.pctX, startY: c.pctY, initialBoxX: c.pctX, initialBoxY: c.pctY });
-    const w = 12;
-    const h = w / (16 / 9);
-    setSelectionBox({
-      startX: c.pctX,
-      startY: c.pctY,
-      width: w,
-      height: h,
-    });
   };
 
   const onZoomMove = (e) => {
@@ -266,24 +258,26 @@ export default function ControlPage() {
       return;
     }
 
-    // MODE 2: Draw a new 16:9 box in ANY direction (Right->Left, Left->Right, Up, Down)
+    // MODE 2: Draw a new 16:9 box ONLY when dragging RIGHT TO LEFT (c.pctX < dragAnchor.startX)
     if (isDrawing) {
-      const minX = Math.min(dragAnchor.startX, c.pctX);
-      const maxX = Math.max(dragAnchor.startX, c.pctX);
-      const minY = Math.min(dragAnchor.startY, c.pctY);
-      const maxY = Math.max(dragAnchor.startY, c.pctY);
+      // Ignore left-to-right drags
+      if (c.pctX >= dragAnchor.startX) {
+        return;
+      }
 
-      const rawW = Math.max(8, maxX - minX);
-      const rawH = Math.max(8 / (16 / 9), maxY - minY);
+      // Dragging Right to Left
+      const minX = c.pctX;
+      const maxX = dragAnchor.startX;
+      const rawW = Math.max(10, maxX - minX);
+      const height = rawW / (16 / 9); // Strict 16:9 Ratio
 
-      // Keep strict 16:9 ratio
-      const width = Math.max(rawW, rawH * (16 / 9));
-      const height = width / (16 / 9);
+      // Center vertically relative to drag anchor Y
+      const startY = Math.min(100 - height, Math.max(0, dragAnchor.startY - height / 2));
 
       const updatedBox = {
-        startX: Math.min(100 - width, Math.max(0, minX)),
-        startY: Math.min(100 - height, Math.max(0, minY)),
-        width,
+        startX: minX,
+        startY,
+        width: rawW,
         height,
       };
 
@@ -425,10 +419,10 @@ export default function ControlPage() {
             className="flex-1 flex flex-col justify-between gap-3 py-2">
             <div className="text-center">
               <h3 className="text-sm font-bold flex items-center justify-center gap-1.5">
-                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> Smart 16:9 Drag & Shift Zoom
+                <ZoomIn className="w-4 h-4 text-[var(--dc-blue)]" /> Right-to-Left Drag & Shift Zoom
               </h3>
               <p className="text-[11px] text-[var(--dc-text-secondary)]">
-                Drag in ANY direction to draw box • Touch INSIDE box to shift/pan live!
+                Drag Right-to-Left (←) to select box • Touch INSIDE box to shift live!
               </p>
             </div>
 
