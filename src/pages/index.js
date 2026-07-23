@@ -57,28 +57,56 @@ export default function Home() {
       if (decks.length > 0 && !activeDeck) {
         setActiveDeck(decks[0]);
       }
+      return decks;
     } catch (e) {
       console.error('Failed to load user decks:', e);
+      return [];
     }
   };
 
-  // MULTI-DEVICE WORKSPACE SOCKET SYNC
+  // MULTI-DEVICE WORKSPACE REAL-TIME FILE SYNC
   useEffect(() => {
     if (isLoggedIn && username) {
       const roomParam = username.toUpperCase() + '-ROOM';
       const newSocket = io();
       setSocket(newSocket);
 
-      newSocket.on('connect', () => {
+      newSocket.on('connect', async () => {
         newSocket.emit('join-room', { roomId: roomParam, role: 'dashboard' });
+
+        // Load local decks and emit to room server state
+        const localDecks = await getUserDecksFromDB(username);
+        if (localDecks && localDecks.length > 0) {
+          newSocket.emit('sync-user-decks', { roomId: roomParam, userDecks: localDecks });
+        }
       });
 
-      // When another device uploads or syncs a deck
+      // Save synced user decks from room into IndexedDB
+      const handleSyncedDecks = async (syncedDecks) => {
+        if (syncedDecks && Array.isArray(syncedDecks) && syncedDecks.length > 0) {
+          for (const d of syncedDecks) {
+            await saveDeckToDB(d);
+          }
+          await loadUserDecks(username);
+          if (!activeDeck && syncedDecks[0]) {
+            setActiveDeck(syncedDecks[0]);
+          }
+        }
+      };
+
       newSocket.on('room-state', async (state) => {
-        if (state.customDeck) {
+        if (state.userDecks && state.userDecks.length > 0) {
+          await handleSyncedDecks(state.userDecks);
+        } else if (state.customDeck) {
           await saveDeckToDB(state.customDeck);
           await loadUserDecks(username);
           setActiveDeck(state.customDeck);
+        }
+      });
+
+      newSocket.on('user-decks-synced', async (data) => {
+        if (data.userDecks) {
+          await handleSyncedDecks(data.userDecks);
         }
       });
 
@@ -90,10 +118,10 @@ export default function Home() {
         }
       });
 
-      newSocket.on('client-joined', () => {
-        // If local device has an active deck, broadcast to room so new devices get files
-        if (activeDeck) {
-          newSocket.emit('upload-deck', { deck: activeDeck });
+      newSocket.on('client-joined', async () => {
+        const localDecks = await getUserDecksFromDB(username);
+        if (localDecks && localDecks.length > 0) {
+          newSocket.emit('sync-user-decks', { roomId: roomParam, userDecks: localDecks });
         }
       });
 
@@ -120,7 +148,10 @@ export default function Home() {
       setUsername(cleanUser);
       localStorage.setItem('ppt_username', cleanUser);
       setIsLoggedIn(true);
-      await loadUserDecks(cleanUser);
+      const decks = await loadUserDecks(cleanUser);
+      if (socket && decks.length > 0) {
+        socket.emit('sync-user-decks', { roomId: cleanUser.toUpperCase() + '-ROOM', userDecks: decks });
+      }
     }
   };
 
@@ -154,11 +185,13 @@ export default function Home() {
       if (newDeck) {
         setActiveDeck(newDeck);
         await saveDeckToDB(newDeck);
-        await loadUserDecks(username);
+        const updatedDecks = await loadUserDecks(username);
 
-        // Broadcast to all devices connected to this username workspace
+        // Broadcast file to all devices in workspace room
         if (socket) {
-          socket.emit('upload-deck', { deck: newDeck });
+          const roomParam = username.toUpperCase() + '-ROOM';
+          socket.emit('upload-deck', { roomId: roomParam, deck: newDeck });
+          socket.emit('sync-user-decks', { roomId: roomParam, userDecks: updatedDecks });
         }
 
         setUploadProgress(`Successfully loaded & synced "${newDeck.title}"!`);
@@ -171,6 +204,17 @@ export default function Home() {
     }
   };
 
+  const handleManualSync = async () => {
+    if (socket && username) {
+      const roomParam = username.toUpperCase() + '-ROOM';
+      socket.emit('join-room', { roomId: roomParam, role: 'dashboard' });
+      const localDecks = await getUserDecksFromDB(username);
+      if (localDecks && localDecks.length > 0) {
+        socket.emit('sync-user-decks', { roomId: roomParam, userDecks: localDecks });
+      }
+    }
+  };
+
   const handleDeleteDeck = async (deckId, e) => {
     e.stopPropagation();
     if (confirm('Are you sure you want to delete this presentation file?')) {
@@ -178,20 +222,26 @@ export default function Home() {
       if (activeDeck && activeDeck.id === deckId) {
         setActiveDeck(null);
       }
-      await loadUserDecks(username);
+      const remainingDecks = await loadUserDecks(username);
+      if (socket) {
+        const roomParam = username.toUpperCase() + '-ROOM';
+        socket.emit('sync-user-decks', { roomId: roomParam, userDecks: remainingDecks });
+      }
     }
   };
 
   const handleSaveNote = async (deckId, slideIndex, noteText) => {
     await updateSlideNoteInDB(deckId, slideIndex, noteText);
-    await loadUserDecks(username);
+    const updatedDecks = await loadUserDecks(username);
     if (editingDeck && editingDeck.id === deckId) {
       const updatedSlides = [...editingDeck.slides];
       updatedSlides[slideIndex].notes = noteText;
       const updatedDeck = { ...editingDeck, slides: updatedSlides };
       setEditingDeck(updatedDeck);
       if (socket) {
-        socket.emit('upload-deck', { deck: updatedDeck });
+        const roomParam = username.toUpperCase() + '-ROOM';
+        socket.emit('upload-deck', { roomId: roomParam, deck: updatedDeck });
+        socket.emit('sync-user-decks', { roomId: roomParam, userDecks: updatedDecks });
       }
     }
   };
@@ -239,6 +289,15 @@ export default function Home() {
 
         {isLoggedIn && (
           <div className="flex items-center space-x-3">
+            <button
+              onClick={handleManualSync}
+              className="p-1.5 rounded-full bg-white border border-slate-200 text-blue-600 hover:bg-blue-50 shadow-sm flex items-center space-x-1 text-xs font-bold px-2.5"
+              title="Sync Files Across Devices"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Sync</span>
+            </button>
+
             <div className="px-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-semibold text-slate-800 shadow-sm flex items-center space-x-2">
               <User className="w-3.5 h-3.5 text-blue-600" />
               <span>@{username}</span>
@@ -339,9 +398,9 @@ export default function Home() {
                   <div className="flex items-center space-x-3">
                     <span className="text-xs font-mono text-slate-500">{userDecks.length} Files Syncing</span>
                     <button
-                      onClick={() => loadUserDecks(username)}
+                      onClick={handleManualSync}
                       className="p-1 rounded-full text-slate-400 hover:text-blue-600 hover:bg-white"
-                      title="Sync Files"
+                      title="Sync Files Across Devices"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
                     </button>
@@ -349,10 +408,19 @@ export default function Home() {
                 </div>
 
                 {userDecks.length === 0 ? (
-                  <div className="glass-card-light p-8 text-center text-slate-500 space-y-2 border border-slate-200">
+                  <div className="glass-card-light p-8 text-center text-slate-500 space-y-3 border border-slate-200">
                     <FileText className="w-8 h-8 text-slate-400 mx-auto" />
                     <p className="text-sm font-medium">No presentation files synced on this device yet.</p>
-                    <p className="text-xs text-slate-400">Upload a PDF or scan the QR code to sync presentation files across PC and Phone.</p>
+                    <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                      Upload a PDF above or tap <strong>Sync</strong> to fetch files uploaded on your PC.
+                    </p>
+                    <button
+                      onClick={handleManualSync}
+                      className="glass-button-primary px-4 py-2 text-xs font-bold inline-flex items-center space-x-1.5"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Sync Workspace Files Now</span>
+                    </button>
                   </div>
                 ) : (
                   Object.entries(groupedDecks).map(([groupName, decks]) => (
@@ -373,7 +441,10 @@ export default function Home() {
                                 key={deck.id}
                                 onClick={() => {
                                   setActiveDeck(deck);
-                                  if (socket) socket.emit('upload-deck', { deck });
+                                  if (socket) {
+                                    const roomParam = username.toUpperCase() + '-ROOM';
+                                    socket.emit('upload-deck', { roomId: roomParam, deck });
+                                  }
                                 }}
                                 className={`glass-card-light p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-3 ${isSelected ? 'border-blue-500 bg-white ring-2 ring-blue-500/20 shadow-md' : 'border-slate-200 hover:border-slate-300'}`}
                               >

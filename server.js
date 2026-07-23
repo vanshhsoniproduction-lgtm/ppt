@@ -22,6 +22,7 @@ function getOrCreateRoom(roomId) {
       totalSlides: 1,
       deckId: null,
       customDeck: null,
+      userDecks: [], // Stores all presentation decks for this workspace room
       isZoomed: false,
       zoomCoords: { x: 0, y: 0, width: 100, height: 100 },
       transitionType: 'slide',
@@ -60,7 +61,7 @@ app.prepare().then(() => {
   const server = createServer(expressApp);
 
   const io = new Server(server, {
-    maxHttpBufferSize: 1e8, // 100 MB payload limit for high-res PDF presentation slides
+    maxHttpBufferSize: 1e8, // 100 MB payload buffer
     cors: {
       origin: '*',
       methods: ['GET', 'POST']
@@ -80,33 +81,64 @@ app.prepare().then(() => {
       const room = getOrCreateRoom(cleanRoomId);
       room.connectedClients++;
 
-      // Send initial room state to client
+      // Send initial room state to newly joined client
       socket.emit('room-state', room);
 
-      // Notify clients
+      // Notify other clients in the room
       io.to(cleanRoomId).emit('client-joined', {
         role: clientRole,
         connectedClients: room.connectedClients
       });
 
-      console.log(`[Socket] ${role} joined room: ${cleanRoomId}`);
+      console.log(`[Socket] ${role} joined room: ${cleanRoomId} (connected: ${room.connectedClients})`);
     });
 
-    socket.on('upload-deck', ({ deck }) => {
-      if (!currentRoomId || !deck) return;
-      const room = getOrCreateRoom(currentRoomId);
+    socket.on('sync-user-decks', ({ roomId, userDecks }) => {
+      const targetRoomId = (roomId || currentRoomId || 'default').toUpperCase().trim();
+      if (!userDecks || !Array.isArray(userDecks)) return;
+
+      const room = getOrCreateRoom(targetRoomId);
+      room.userDecks = userDecks;
+      if (userDecks.length > 0 && !room.customDeck) {
+        room.customDeck = userDecks[0];
+      }
+
+      io.to(targetRoomId).emit('user-decks-synced', {
+        userDecks: room.userDecks
+      });
+      console.log(`[Socket] Synced ${userDecks.length} presentation files to room: ${targetRoomId}`);
+    });
+
+    socket.on('upload-deck', ({ roomId, deck }) => {
+      const targetRoomId = (roomId || currentRoomId || 'default').toUpperCase().trim();
+      if (!deck) return;
+
+      const room = getOrCreateRoom(targetRoomId);
       room.customDeck = deck;
       room.deckId = deck.id;
       room.currentSlide = 0;
       room.totalSlides = deck.slides ? deck.slides.length : 1;
       room.isZoomed = false;
 
-      io.to(currentRoomId).emit('deck-uploaded', {
+      // Add to userDecks array if not present
+      if (!room.userDecks) room.userDecks = [];
+      const idx = room.userDecks.findIndex(d => d.id === deck.id);
+      if (idx >= 0) {
+        room.userDecks[idx] = deck;
+      } else {
+        room.userDecks.unshift(deck);
+      }
+
+      io.to(targetRoomId).emit('deck-uploaded', {
         deck,
         currentSlide: 0,
         totalSlides: room.totalSlides
       });
-      console.log(`[Socket] Deck "${deck.title}" uploaded to room: ${currentRoomId}`);
+      io.to(targetRoomId).emit('user-decks-synced', {
+        userDecks: room.userDecks
+      });
+
+      console.log(`[Socket] Presentation "${deck.title}" uploaded to room: ${targetRoomId}`);
     });
 
     socket.on('slide-change', ({ slideIndex, totalSlides }) => {
@@ -115,7 +147,6 @@ app.prepare().then(() => {
       room.currentSlide = slideIndex;
       if (totalSlides) room.totalSlides = totalSlides;
 
-      // Auto reset zoom on slide change
       room.isZoomed = false;
       room.zoomCoords = { x: 0, y: 0, width: 100, height: 100 };
 
