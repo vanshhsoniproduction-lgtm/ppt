@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { QRCodeSVG } from 'qrcode.react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { io } from 'socket.io-client';
 import {
   Tv,
   Smartphone,
@@ -17,15 +18,17 @@ import {
   LogOut,
   Calendar,
   X,
-  CheckCircle2
+  CheckCircle2,
+  RefreshCw
 } from 'lucide-react';
 import { processPdfFile, processImageFiles } from '../utils/pdfProcessor';
-import { getUserDecksFromDB, deleteDeckFromDB, updateSlideNoteInDB } from '../utils/db';
+import { getUserDecksFromDB, saveDeckToDB, deleteDeckFromDB, updateSlideNoteInDB } from '../utils/db';
 
 export default function Home() {
   const [username, setUsername] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userDecks, setUserDecks] = useState([]);
+  const [socket, setSocket] = useState(null);
 
   // Active Presentation Session State
   const [activeDeck, setActiveDeck] = useState(null);
@@ -58,6 +61,47 @@ export default function Home() {
       console.error('Failed to load user decks:', e);
     }
   };
+
+  // MULTI-DEVICE WORKSPACE SOCKET SYNC
+  useEffect(() => {
+    if (isLoggedIn && username) {
+      const roomParam = username.toUpperCase() + '-ROOM';
+      const newSocket = io();
+      setSocket(newSocket);
+
+      newSocket.on('connect', () => {
+        newSocket.emit('join-room', { roomId: roomParam, role: 'dashboard' });
+      });
+
+      // When another device uploads or syncs a deck
+      newSocket.on('room-state', async (state) => {
+        if (state.customDeck) {
+          await saveDeckToDB(state.customDeck);
+          await loadUserDecks(username);
+          setActiveDeck(state.customDeck);
+        }
+      });
+
+      newSocket.on('deck-uploaded', async (data) => {
+        if (data.deck) {
+          await saveDeckToDB(data.deck);
+          await loadUserDecks(username);
+          setActiveDeck(data.deck);
+        }
+      });
+
+      newSocket.on('client-joined', () => {
+        // If local device has an active deck, broadcast to room so new devices get files
+        if (activeDeck) {
+          newSocket.emit('upload-deck', { deck: activeDeck });
+        }
+      });
+
+      return () => {
+        newSocket.disconnect();
+      };
+    }
+  }, [isLoggedIn, username]);
 
   // DYNAMIC QR CODE URL GENERATION
   useEffect(() => {
@@ -109,8 +153,15 @@ export default function Home() {
 
       if (newDeck) {
         setActiveDeck(newDeck);
+        await saveDeckToDB(newDeck);
         await loadUserDecks(username);
-        setUploadProgress(`Successfully loaded "${newDeck.title}"!`);
+
+        // Broadcast to all devices connected to this username workspace
+        if (socket) {
+          socket.emit('upload-deck', { deck: newDeck });
+        }
+
+        setUploadProgress(`Successfully loaded & synced "${newDeck.title}"!`);
       }
     } catch (err) {
       console.error(err);
@@ -137,7 +188,11 @@ export default function Home() {
     if (editingDeck && editingDeck.id === deckId) {
       const updatedSlides = [...editingDeck.slides];
       updatedSlides[slideIndex].notes = noteText;
-      setEditingDeck({ ...editingDeck, slides: updatedSlides });
+      const updatedDeck = { ...editingDeck, slides: updatedSlides };
+      setEditingDeck(updatedDeck);
+      if (socket) {
+        socket.emit('upload-deck', { deck: updatedDeck });
+      }
     }
   };
 
@@ -281,14 +336,23 @@ export default function Home() {
                     <FileText className="w-5 h-5 text-blue-600" />
                     <span>My Files Library</span>
                   </h3>
-                  <span className="text-xs font-mono text-slate-500">{userDecks.length} Files Uploaded</span>
+                  <div className="flex items-center space-x-3">
+                    <span className="text-xs font-mono text-slate-500">{userDecks.length} Files Syncing</span>
+                    <button
+                      onClick={() => loadUserDecks(username)}
+                      className="p-1 rounded-full text-slate-400 hover:text-blue-600 hover:bg-white"
+                      title="Sync Files"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 {userDecks.length === 0 ? (
                   <div className="glass-card-light p-8 text-center text-slate-500 space-y-2 border border-slate-200">
                     <FileText className="w-8 h-8 text-slate-400 mx-auto" />
-                    <p className="text-sm font-medium">No presentation files uploaded yet.</p>
-                    <p className="text-xs text-slate-400">Upload a PDF or presentation above to get started.</p>
+                    <p className="text-sm font-medium">No presentation files synced on this device yet.</p>
+                    <p className="text-xs text-slate-400">Upload a PDF or scan the QR code to sync presentation files across PC and Phone.</p>
                   </div>
                 ) : (
                   Object.entries(groupedDecks).map(([groupName, decks]) => (
@@ -307,7 +371,10 @@ export default function Home() {
                             return (
                               <div
                                 key={deck.id}
-                                onClick={() => setActiveDeck(deck)}
+                                onClick={() => {
+                                  setActiveDeck(deck);
+                                  if (socket) socket.emit('upload-deck', { deck });
+                                }}
                                 className={`glass-card-light p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-3 ${isSelected ? 'border-blue-500 bg-white ring-2 ring-blue-500/20 shadow-md' : 'border-slate-200 hover:border-slate-300'}`}
                               >
                                 <div className="flex items-start space-x-3">
