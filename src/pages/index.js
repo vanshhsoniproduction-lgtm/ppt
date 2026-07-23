@@ -107,15 +107,19 @@ export default function Dashboard() {
 
   // ── Upload ──
   const handleFileUpload = async (e) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    e.target.value = ''; // Reset input
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    // Snapshot FileList into a regular Array BEFORE resetting input
+    // (FileList is a live DOM object — resetting input empties it)
+    const files = Array.from(fileList);
+    const file = files[0];
+    e.target.value = ''; // Now safe to reset
 
     setIsUploading(true);
     setUploadProgress('Processing file...');
 
     try {
-      const file = files[0];
       let slides = [];
       let title = file.name.replace(/\.[^/.]+$/, '');
 
